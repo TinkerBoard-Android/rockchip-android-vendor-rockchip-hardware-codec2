@@ -1,0 +1,41 @@
+cc_library_static {
+    name: "libcodec2_rk_mpi",
+    vendor: true,
+    defaults: [
+        "libcodec2_rk-defaults",
+        "libcodec2_rk_sanitize_signed-defaults",
+   ],
+
+    srcs: [
+        "C2RKMpiDec.cpp",
+        "C2RKMpiEnc.cpp",
+    ],
+
+    shared_libs: [
+        "libmpp",
+        "librga"
+    ],
+
+    header_libs: [
+        "libhardware_rockchip_headers",
+    ],
+
+    include_dirs: [
+        "vendor/rockchip/hardware/interfaces/codec2/component/include",
+        "hardware/rockchip/librga/include",
+    ],
+
+    export_shared_lib_headers: [
+        "libsfplugin_ccodec_utils",
+    ],
+
+    sanitize: {
+        misc_undefined: [
+            "unsigned-integer-overflow",
+            "signed-integer-overflow",
+        ],
+        cfi: true,
+    },
+
+    ldflags: ["-Wl,-Bsymbolic"],
+}
