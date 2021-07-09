@@ -853,7 +853,7 @@ C2RKComponentStore::C2RKComponentStore()
     emplace("c2.rk.vp8.decoder");
     emplace("c2.rk.hevc.decoder");
     emplace("c2.rk.mpeg2.decoder");
-    emplace("c2.rk.mpeg4.decoder");
+    emplace("c2.rk.m4v.decoder");
 
     emplace("c2.rk.avc.encoder");
 }
