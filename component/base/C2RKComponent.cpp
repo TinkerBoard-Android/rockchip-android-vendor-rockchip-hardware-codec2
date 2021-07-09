@@ -111,17 +111,20 @@ void C2RKComponent::WorkHandler::onMessageReceived(const sp<AMessage> &msg) {
         }
         case kWhatStop: {
             int32_t err = thiz->onStop();
+            thiz->mOutputBlockPool.reset();
             Reply(msg, &err);
             break;
         }
         case kWhatReset: {
             thiz->onReset();
+            thiz->mOutputBlockPool.reset();
             mRunning = false;
             Reply(msg);
             break;
         }
         case kWhatRelease: {
             thiz->onRelease();
+            thiz->mOutputBlockPool.reset();
             mRunning = false;
             Reply(msg);
             break;
