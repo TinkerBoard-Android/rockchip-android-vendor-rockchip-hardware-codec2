@@ -52,6 +52,7 @@ protected:
     virtual ~C2RKMpiEnc();
 
 private:
+    c2_status_t setVuiParams();
     c2_status_t initEncParams();
     c2_status_t initEncoder();
     c2_status_t releaseEncoder();
@@ -96,6 +97,7 @@ private:
     std::shared_ptr<C2StreamBitrateModeTuning::output> mBitrateMode;
     std::shared_ptr<C2StreamGopTuning::output> mGop;
     std::shared_ptr<C2StreamRequestSyncFrameTuning::output> mRequestSync;
+    std::shared_ptr<C2StreamColorAspectsInfo::output> mColorAspects;
 };
 
 C2ComponentFactory* CreateRKMpiEncFactory(std::string componentName);
