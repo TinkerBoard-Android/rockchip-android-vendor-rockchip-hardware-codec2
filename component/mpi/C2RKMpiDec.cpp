@@ -28,7 +28,7 @@
 #include "hardware/hardware_rockchip.h"
 #include "C2RKMpiDec.h"
 #include "C2RKMediaDefs.h"
-
+#include "C2RKVersion.h"
 #define GRALLOC_USAGE_PRIVATE_2 1ULL << 30
 #define GRALLOC_USAGE_HW_TEXTURE 1ULL << 8
 #define GRALLOC_USAGE_EXTERNAL_DISP 1ULL << 13
@@ -322,7 +322,7 @@ C2RKMpiDec::C2RKMpiDec(
       mCodingType(MPP_VIDEO_CodingUnused),
       mSignalledOutputEos(false) {
     FunctionIn();
-
+    c2_info("version:%s", C2_GIT_BUILD_VERSION);
     int err = getCodingTypeFromComponentName(name, &mCodingType);
     if (err) {
         c2_err("get coding type from component name failed! now codingtype=%d", mCodingType);

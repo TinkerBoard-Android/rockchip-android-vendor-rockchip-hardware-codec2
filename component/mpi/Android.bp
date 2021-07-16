@@ -1,10 +1,11 @@
 cc_library_static {
     name: "libcodec2_rk_mpi",
     vendor: true,
+    generated_headers: ["c2_version"],
     defaults: [
         "libcodec2_rk-defaults",
         "libcodec2_rk_sanitize_signed-defaults",
-   ],
+    ],
 
     srcs: [
         "C2RKMpiDec.cpp",

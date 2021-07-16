@@ -41,6 +41,7 @@
 #include "C2RKLog.h"
 #include "C2RKEnv.h"
 #include "C2RKVideoGlobal.h"
+#include "C2RKVersion.h"
 
 namespace android {
 
@@ -624,6 +625,7 @@ C2RKMpiEnc::C2RKMpiEnc(
       mFp_enc_out(nullptr),
       mFp_enc_in(nullptr),
       mCodingType(MPP_VIDEO_CodingUnused){
+    c2_info("version:%s", C2_GIT_BUILD_VERSION);
     int err = getCodingTypeFromComponentName(name, &mCodingType);
     if (err) {
         c2_err("get coding type from component name failed! now codingtype=%d", mCodingType);

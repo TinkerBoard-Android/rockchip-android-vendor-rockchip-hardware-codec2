@@ -1,0 +1,10 @@
+genrule {
+    name: "c2_version",
+    srcs: [
+        "version.h.template",
+        "version.sh",
+        ".git/HEAD",
+    ],
+    cmd: "bash $(location version.sh) > $(out)",
+    out: ["C2RKVersion.h"],
+}

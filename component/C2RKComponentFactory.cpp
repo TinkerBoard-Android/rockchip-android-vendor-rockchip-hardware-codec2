@@ -23,9 +23,10 @@
 #include <C2RKMpiEnc.h>
 #include <C2RKMediaDefs.h>
 #include "C2RKLog.h"
+#include "C2RKVersion.h"
 
 extern "C" ::C2ComponentFactory* CreateRKCodec2Factory(std::string componentName) {
-    c2_info("in %s", __func__);
+    c2_info("in %s version:%s", __func__, C2_GIT_BUILD_VERSION);
     C2Component::kind_t kind;
     C2ComponentFactory *factory = NULL;
 

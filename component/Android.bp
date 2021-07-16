@@ -7,10 +7,11 @@ cc_library_shared {
     name: "libcodec2_rk_component",
     vendor: true,
     version_script: ":codec2_rk_exports",
+    generated_headers: ["c2_version"],
     defaults: [
         "libcodec2_rk-defaults",
         "libcodec2_rk_sanitize_signed-defaults",
-   ],
+    ],
 
     srcs: [
         "C2RKComponentFactory.cpp",
