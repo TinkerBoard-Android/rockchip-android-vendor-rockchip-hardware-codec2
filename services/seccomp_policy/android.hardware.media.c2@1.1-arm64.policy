@@ -26,6 +26,7 @@ getrlimit: 1
 fstat: 1
 newfstatat: 1
 fstatfs: 1
+recvfrom: 1
 memfd_create: 1
 ftruncate: 1
 
