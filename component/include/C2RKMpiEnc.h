@@ -77,11 +77,11 @@ private:
     bool    mStarted;
     void    *mRgaCtx;
     VPUMemLinear_t *mVpumem;
-    std::map<uint64_t, uint32_t> mWorkIndexMaps;
     int32_t mEncProfile;
     int32_t mEncLevel;
     int32_t mIDRInterval;
     int32_t mIInterval;
+    int32_t mEos;
     MppCtx mMppCtx;
     MppApi *mMppMpi;
     FILE *mFp_enc_out;
