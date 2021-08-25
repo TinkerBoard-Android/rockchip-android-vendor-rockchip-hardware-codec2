@@ -35,6 +35,8 @@
 
 namespace android {
 
+#define FLAG_NON_DISPLAY_FRAME (1u << 15)
+
 typedef struct _MpiCodecContext {
     MppCtx              mppCtx;
     MppApi             *mppMpi;
@@ -72,9 +74,6 @@ private:
             uint64_t index,
             const std::unique_ptr<C2Work> &work,
             const std::shared_ptr<C2GraphicBlock> block);
-    void finishNewWork(
-        std::unique_ptr<C2Work> &work,
-        const std::shared_ptr<C2GraphicBlock> block);
     void fillEmptyWork(const std::unique_ptr<C2Work> &work);
     bool getVuiParams(MppFrame *frame);
     c2_status_t decode_sendstream(const std::unique_ptr<C2Work> &work);
@@ -94,11 +93,7 @@ private:
     std::map<uint64_t, uint32_t> mFrameIndexMaps;
     uint32_t mFindIndex; //for local buffer
     bool mOutputEos;
-
-    //for decode file whose pkts pts are 0
-    uint64_t mLastTimestamp;
-    uint32_t mLastFrameIndex;
-    uint32_t mIndex;
+    bool mFlushed;
 
     uint32_t mWidth;
     uint32_t mHeight;

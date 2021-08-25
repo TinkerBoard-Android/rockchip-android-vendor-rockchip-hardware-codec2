@@ -442,17 +442,6 @@ void C2RKComponent::finish(
     }
 }
 
-void C2RKComponent::finish(
-        std::unique_ptr<C2Work> &work,
-        std::function<void(const std::unique_ptr<C2Work> &)> fillWork) {
-    if (work) {
-        fillWork(work);
-        std::shared_ptr<C2Component::Listener> listener = mExecState.lock()->mListener;
-        listener->onWorkDone_nb(shared_from_this(), vec(work));
-        c2_trace("returning pending work");
-    }
-}
-
 void C2RKComponent::cloneAndSend(
         uint64_t frameIndex,
         const std::unique_ptr<C2Work> &currentWork,

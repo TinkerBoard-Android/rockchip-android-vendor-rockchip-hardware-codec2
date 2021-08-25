@@ -311,9 +311,7 @@ C2RKMpiDec::C2RKMpiDec(
       mIntf(intfImpl),
       mFindIndex(0l),
       mOutputEos(false),
-      mLastTimestamp(-1ll),
-      mLastFrameIndex(-1l),
-      mIndex(0l),
+      mFlushed(false),
       mWidth(320),
       mHeight(240),
       mOutIndex(0u),
@@ -468,7 +466,8 @@ void C2RKMpiDec::onReset() {
 
 void C2RKMpiDec::onRelease() {
     c2_info("%s in", __func__);
-    onFlush_sm();
+    if (!mFlushed)
+        onFlush_sm();
 
     if (mCtx == NULL) {
         return;
@@ -491,6 +490,7 @@ void C2RKMpiDec::onRelease() {
 }
 
 c2_status_t C2RKMpiDec::onFlush_sm() {
+    c2_info("%s in", __func__);
     c2_status_t ret = C2_OK;
     MPP_RET err = MPP_OK;
 
@@ -505,7 +505,6 @@ c2_status_t C2RKMpiDec::onFlush_sm() {
     mBufferMaps.clear();
     mBlockMaps.clear();
     mFrameIndexMaps.clear();
-    mIndex = 0l;
 
     C2StreamBlockCountInfo::output blockCount(0u);
     std::vector<std::unique_ptr<C2SettingResult>> failures;
@@ -525,10 +524,12 @@ c2_status_t C2RKMpiDec::onFlush_sm() {
         c2_err("mpi->reset failed\n");
         return C2_CORRUPTED;
     }
+    mFlushed = true;
     return ret;
 }
 
 void C2RKMpiDec::fillEmptyWork(const std::unique_ptr<C2Work> &work) {
+    c2_info("%s in", __func__);
     uint32_t flags = 0;
     if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
         flags |= C2FrameData::FLAG_END_OF_STREAM;
@@ -544,7 +545,6 @@ void C2RKMpiDec::finishWork(
         uint64_t index,
         const std::unique_ptr<C2Work> &work,
         const std::shared_ptr<C2GraphicBlock> block) {
-    (void)work;
     std::shared_ptr<C2Buffer> buffer = NULL;
     if (block) {
         buffer = createGraphicBuffer(std::move(block), C2Rect(mWidth, mHeight));
@@ -607,47 +607,23 @@ void C2RKMpiDec::finishWork(
     }
     c2_trace("%s %d block count=%d", __FUNCTION__, __LINE__, blockCount.value);
 
-    finish(index, fillWork);
-}
-
-void C2RKMpiDec::finishNewWork(
-        std::unique_ptr<C2Work> &work,
-        const std::shared_ptr<C2GraphicBlock> block) {
-    std::shared_ptr<C2Buffer> buffer = NULL;
-    if (block) {
-        buffer = createGraphicBuffer(std::move(block), C2Rect(mWidth, mHeight));
-    }
-    {
-        if (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC
-            || mCodingType ==MPP_VIDEO_CodingMPEG2) {
-            IntfImpl::Lock lock = mIntf->lock();
-            buffer->setInfo(mIntf->getColorAspects_l());
+    if (work && c2_cntr64_t(index) == work->input.ordinal.frameIndex) {
+        bool eos = ((work->input.flags & C2FrameData::FLAG_END_OF_STREAM) != 0);
+        if (eos) {
+            if (buffer) {
+                mOutIndex = index;
+                C2WorkOrdinalStruct outOrdinal = work->input.ordinal;
+                cloneAndSend(
+                    mOutIndex, work,
+                    FillWork(C2FrameData::FLAG_INCOMPLETE, outOrdinal, buffer));
+                buffer.reset();
+            }
+        } else {
+            fillWork(work);
         }
+    } else {
+        finish(index, fillWork);
     }
-
-    auto fillWork = [buffer](const std::unique_ptr<C2Work> &work) {
-        work->worklets.front()->output.buffers.clear();
-        if(buffer)
-            work->worklets.front()->output.buffers.push_back(buffer);
-        work->workletsProcessed = 1u;
-    };
-    C2StreamBlockCountInfo::output blockCount(0u);
-    std::vector<std::unique_ptr<C2Param>> params;
-    c2_status_t err = intf()->query_vb(
-                            { &blockCount },
-                            {},
-                            C2_DONT_BLOCK,
-                            &params);
-
-    blockCount.value--;
-    std::vector<std::unique_ptr<C2SettingResult>> failures;
-    err = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
-    if (err != C2_OK) {
-        c2_err("block count config failed!");
-    }
-    c2_trace("%s %d block count=%d", __FUNCTION__, __LINE__, blockCount.value);
-
-    finish(work, fillWork);
 }
 
 void C2RKMpiDec::process(
@@ -656,12 +632,43 @@ void C2RKMpiDec::process(
     c2_status_t err             = C2_OK;
     uint32_t    inputComplete   = 0;
 
+    // Initialize output work
+    work->result = C2_OK;
+    work->workletsProcessed = 0u;
+    work->worklets.front()->output.flags = work->input.flags;
+
     if (mSignalledOutputEos) {
+        c2_err("eos,return !");
         work->result = C2_BAD_VALUE;
         return;
     }
 
+    size_t inSize = 0u;
+    C2ReadView rView = mDummyReadView;
+    if (!work->input.buffers.empty()) {
+        rView = work->input.buffers[0]->data().linearBlocks().front().map().get();
+        inSize = rView.capacity();
+        if (inSize && rView.error()) {
+            c2_err("read view map failed %d", rView.error());
+            work->result = rView.error();
+            return;
+        }
+    }
+
+    c2_trace("in buffer attr. size %zu timestamp %d frameindex %d, flags %x",
+          inSize, (int)work->input.ordinal.timestamp.peeku(),
+          (int)work->input.ordinal.frameIndex.peeku(), work->input.flags);
+
     bool eos = ((work->input.flags & C2FrameData::FLAG_END_OF_STREAM) != 0);
+    if (inSize == 0 && !eos) {
+        fillEmptyWork(work);
+        return;
+    } else if (inSize == 0 && eos) {
+        fillEmptyWork(work);
+        c2_info("eos with empty work !");
+        mSignalledOutputEos = true;
+    }
+
     while (!inputComplete) {
         err = ensureMppGroupReady(pool);
         if (err != C2_OK) {
@@ -682,12 +689,14 @@ void C2RKMpiDec::process(
         }
         usleep(5 * 1000);
     }
-    if(eos){
+    if (eos && !mOutputEos) {
         drainInternal(DRAIN_COMPONENT_WITH_EOS, pool, work);
         mSignalledOutputEos = true;
+    } else if (eos && mOutputEos) {
+        fillEmptyWork(work);
     }
 
-    c2_trace("%s %d in", __FUNCTION__, __LINE__);
+    c2_trace("%s %d out", __FUNCTION__, __LINE__);
 }
 
 bool C2RKMpiDec::getVuiParams(MppFrame *frame) {
@@ -737,43 +746,18 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
     MPP_RET     err         = MPP_OK;
     c2_status_t ret         = C2_OK;
 
-    // Initialize work
-    work->result = C2_OK;
-    work->workletsProcessed = 0u;
-    work->worklets.front()->output.flags = work->input.flags;
-
     C2ReadView rView = mDummyReadView;
     if (!work->input.buffers.empty()) {
         rView = work->input.buffers[0]->data().linearBlocks().front().map().get();
         inSize = rView.capacity();
-        if (inSize && rView.error()) {
-            c2_err("read view map failed %d", rView.error());
-            work->result = rView.error();
-            ret = C2_CORRUPTED;
-            goto __FAILED;
-        }
     }
-    if(work->input.flags == 0){
-        frameindex = work->input.ordinal.frameIndex.peeku() & 0xFFFFFFFF;
-        timestamps = work->input.ordinal.timestamp.peekll();
-        if(mLastFrameIndex != frameindex){
-            mLastFrameIndex = frameindex;
-            if(mLastTimestamp != timestamps){
-                mLastTimestamp = timestamps;
-                mFrameIndexMaps[timestamps] = frameindex;
-            }else if(mLastTimestamp == timestamps) {
-                mIndex++;
-                mFrameIndexMaps[mLastTimestamp + mIndex] = frameindex;
-                timestamps = mLastTimestamp + mIndex;
-            }
-        }
-    }else{
-        timestamps = work->input.ordinal.timestamp.peekll();
-    }
+
+    frameindex = work->input.ordinal.frameIndex.peeku() & 0xFFFFFFFF;
+    timestamps = work->input.ordinal.timestamp.peekll();
+    if (inSize != 0)
+        mFrameIndexMaps[timestamps] = frameindex;
+
     inData = const_cast<uint8_t *>(rView.data());
-    c2_trace("in buffer attr. size %zu timestamp %d frameindex %d, flags %x",
-          inSize, (int)work->input.ordinal.timestamp.peeku(),
-          (int)work->input.ordinal.frameIndex.peeku(), work->input.flags);
 
     mpp_packet_init(&mppPkt, inData, inSize);
 
@@ -797,8 +781,15 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
         ret = C2_NOT_FOUND;
         goto __FAILED;
     }else{
-        if (work->input.flags != 0) {
+        if ((work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) != 0) {
+            mFrameIndexMaps.erase(work->input.ordinal.timestamp.peekll());
             fillEmptyWork(work);
+        }
+        if (mCodingType == MPP_VIDEO_CodingVP9) {
+            if ((work->input.flags & FLAG_NON_DISPLAY_FRAME) != 0) {
+                mFrameIndexMaps.erase(work->input.ordinal.timestamp.peekll());
+                fillEmptyWork(work);
+            }
         }
     }
 
@@ -890,18 +881,38 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
             if(it_frameindex != mFrameIndexMaps.end()){
                 c2_trace("frame index: %llu", (unsigned long long)it_frameindex->second);
                 finishWork((uint64_t)it_frameindex->second, work, it->second);
+                mFrameIndexMaps.erase(it_frameindex);
             }else{
-                c2_trace("can not find frame index, create new work and send!");
-                std::unique_ptr<C2Work> outputWork(new C2Work);
-                outputWork->worklets.clear();
-                outputWork->worklets.emplace_back(new C2Worklet);
-                outputWork->worklets.front()->output.flags = (C2FrameData::flags_t)0;
-                outputWork->worklets.front()->output.ordinal.timestamp = mpp_frame_get_pts(mppFrame);
-                finishNewWork(outputWork, it->second);
+                c2_trace("can not find frame index，drop！");
+                C2StreamBlockCountInfo::output blockCount(0u);
+                std::vector<std::unique_ptr<C2Param>> params;
+                c2_status_t err = intf()->query_vb(
+                                        { &blockCount },
+                                        {},
+                                        C2_DONT_BLOCK,
+                                        &params);
+
+                blockCount.value--;
+                std::vector<std::unique_ptr<C2SettingResult>> failures;
+                err = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
+                if (err != C2_OK) {
+                    c2_err("block count config failed!");
+                }
+                c2_trace("%s %d block count=%d", __FUNCTION__, __LINE__, blockCount.value);
             }
         }else{
             mOutputEos = true;
-            ALOGD("mpp_frame_get_eos true !");
+            if(it_frameindex != mFrameIndexMaps.end()){
+                c2_trace("frame index: %llu", (unsigned long long)it_frameindex->second);
+                finishWork((uint64_t)it_frameindex->second, work, it->second);
+                mFrameIndexMaps.erase(it_frameindex);
+            }
+            // for debug
+            // std::map<uint64_t, uint32_t>::iterator iter;
+            // for (iter = mFrameIndexMaps.begin();iter != mFrameIndexMaps.end(); iter ++ ) {
+            //     c2_info("first:%lld second:%d\n",iter->first,iter->second);
+            // }
+            c2_info("mpp_frame_get_eos true ! mFrameIndexMaps size:%d",mFrameIndexMaps.size());
         }
         mBlockMaps[mpp_frame_get_buffer(mppFrame)] = NULL;
 
@@ -917,7 +928,6 @@ c2_status_t C2RKMpiDec::drainInternal(
     const std::unique_ptr<C2Work> &work) {
     c2_trace("%s %d in", __FUNCTION__, __LINE__);
     c2_status_t ret = C2_OK;
-    int retry = 50;
 
     if (drainMode == NO_DRAIN) {
         c2_warn("drain with NO_DRAIN: no-op");
@@ -928,14 +938,15 @@ c2_status_t C2RKMpiDec::drainInternal(
         return C2_OMITTED;
     }
 
-    while (!mOutputEos && retry != 0){
+    while (!mOutputEos){
         ret = ensureMppGroupReady(pool);
         if (ret != C2_OK) {
             c2_warn("can't ensure mpp group buffer enough! err=%d", ret);
         }
         ret = decode_getoutframe(work);
-        retry --;
         usleep(5 * 1000);
+        if(mOutputEos)
+            fillEmptyWork(work);
     }
 
     return C2_OK;
