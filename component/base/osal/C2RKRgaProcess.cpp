@@ -78,3 +78,23 @@ void rga_rgb2nv12(RKVideoPlane *plane, VPUMemLinear_t *vpumem,
 
     FunctionOut();
 }
+
+void rga_nv12_copy(RKVideoPlane *plane, VPUMemLinear_t *vpumem,
+            uint32_t Width, uint32_t Height, void* rga_ctx) {
+    FunctionIn();
+
+    rga_info_t src;
+    rga_info_t dst;
+    (void) rga_ctx;
+    memset((void*)&src, 0, sizeof(rga_info_t));
+    memset((void*)&dst, 0, sizeof(rga_info_t));
+    rga_set_rect(&src.rect, 0, 0, Width, Height, plane->stride, Height, HAL_PIXEL_FORMAT_YCrCb_NV12);
+    rga_set_rect(&dst.rect, 0, 0, Width, Height, Width, Height, HAL_PIXEL_FORMAT_YCrCb_NV12);
+    src.fd = plane->fd;
+    dst.fd = vpumem->phy_addr;
+    if (RgaBlit(&src, &dst, NULL)) {
+        c2_err("RgaBlit fail");
+    }
+
+    FunctionOut();
+}

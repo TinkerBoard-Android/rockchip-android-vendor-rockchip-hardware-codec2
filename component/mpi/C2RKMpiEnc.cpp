@@ -745,6 +745,7 @@ c2_status_t C2RKMpiEnc::initEncParams() {
     c2_info("%s in", __func__);
     c2_status_t ret = C2_OK;
     int err = 0;
+    int32_t gop = 30;
     MppEncSeiMode seiMode = MPP_ENC_SEI_MODE_ONE_FRAME;
 
     err = mpp_enc_cfg_init(&enc_cfg);
@@ -757,7 +758,7 @@ c2_status_t C2RKMpiEnc::initEncParams() {
     mpp_enc_cfg_set_s32(enc_cfg, "prep:width", mSize->width);
     mpp_enc_cfg_set_s32(enc_cfg, "prep:height", mSize->height);
     mpp_enc_cfg_set_s32(enc_cfg, "prep:hor_stride", C2_ALIGN(mSize->width, 16));
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:ver_stride", C2_ALIGN(mSize->height, 16));
+    mpp_enc_cfg_set_s32(enc_cfg, "prep:ver_stride", C2_ALIGN(mSize->height, 8));
     mpp_enc_cfg_set_s32(enc_cfg, "prep:format", MPP_FMT_YUV420SP);
     mpp_enc_cfg_set_s32(enc_cfg, "prep:rotation", MPP_ENC_ROT_0);
 
@@ -811,9 +812,10 @@ c2_status_t C2RKMpiEnc::initEncParams() {
         //     mBframes = maxBframes;
         // }
     }
-    mpp_enc_cfg_set_s32(enc_cfg, "rc:gop", mIDRInterval);
+    gop = (mIDRInterval / mFrameRate->value < 8640000) ? mIDRInterval / mFrameRate->value : mFrameRate->value;
+    mpp_enc_cfg_set_s32(enc_cfg, "rc:gop", gop);
     c2_info("(%s): bps %d fps %f gop %d\n",
-            intf()->getName().c_str(), mBitrate->value, mFrameRate->value, mIDRInterval);
+            intf()->getName().c_str(), mBitrate->value, mFrameRate->value, gop);
 
     mpp_enc_cfg_set_s32(enc_cfg, "codec:type", mCodingType);
     switch (mCodingType) {
@@ -994,6 +996,7 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
 }
 
 static void fillEmptyWork(const std::unique_ptr<C2Work>& work) {
+    c2_trace("%s in", __func__);
     uint32_t flags = 0;
     if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
         flags |= C2FrameData::FLAG_END_OF_STREAM;
@@ -1210,16 +1213,26 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
         view = std::make_shared<const C2GraphicView>(
                 inputBuffer->data().graphicBlocks().front().map().get());
         auto c2Handle = inputBuffer->data().graphicBlocks().front().handle();
-        native_handle_t *grallocHandle = UnwrapNativeCodec2GrallocHandle(c2Handle);
+        uint32_t bqSlot;
+        uint32_t Width;
+        uint32_t Height;
+        uint32_t Format;
+        uint64_t usage;
+        uint32_t Stride;
+        uint32_t generation;
+        uint64_t bqId;
+        android::_UnwrapNativeCodec2GrallocMetadata(
+                c2Handle, &Width, &Height, &Format, &usage, &Stride, &generation, &bqId, &bqSlot);
+        c2_trace("%s Width:%d Height:%d Format:%d Stride:%d", __func__, Width, Height, Format, Stride);
         //convert rgb or yuv to nv12
         {
             RKVideoPlane *vplanes = (RKVideoPlane *)malloc(sizeof(RKVideoPlane));
             {
-                vplanes[0].fd = grallocHandle->data[0];
+                vplanes[0].fd = c2Handle->data[0];
                 vplanes[0].offset = 0;
                 vplanes[0].addr = NULL;
                 vplanes[0].type = 1;
-                vplanes[0].stride = C2_ALIGN(width, 16);
+                vplanes[0].stride = Stride;
             }
             const C2GraphicView* const input = view.get();
             const C2PlanarLayout& layout = input->layout();
@@ -1249,19 +1262,28 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
                         fwrite(input->data()[0], 1, mSize->width * mSize->height * 3 / 2, mFp_enc_in);
                         fflush(mFp_enc_in);
                     }
-                    //TODO: if(input->width() != width) do more(rga_nv12_copy)?
-                    inputCommit.size = width * height * 3/2;
-                    inputCommit.fd = grallocHandle->data[0];
+                    if (Format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
+                        if (Width != Stride || (Height & 0xf)) {
+                            rga_nv12_copy(vplanes, mVpumem, Width, Height, mRgaCtx);
+                            inputCommit.fd = mVpumem->phy_addr;
+                            inputCommit.size = Width * Height * 3 / 2;
+                        } else {
+                            inputCommit.size = width * height * 3 / 2;
+                            inputCommit.fd = c2Handle->data[0];
+                        }
+                    } else {
+                        //TODO: if(input->width() != width) do more(rga_nv12_copy)?
+                        inputCommit.size = width * height * 3/2;
+                        inputCommit.fd = c2Handle->data[0];
+                    }
                     C2_SAFE_FREE(vplanes);
                     break;
                 case C2PlanarLayout::TYPE_YUVA:
                     c2_err("YUVA plane type is not supported");
-                    native_handle_delete(grallocHandle);
                     C2_SAFE_FREE(vplanes);
                     return C2_BAD_VALUE;
                 default:
                     c2_err("Unrecognized plane type: %d", layout.type);
-                    native_handle_delete(grallocHandle);
                     C2_SAFE_FREE(vplanes);
                     return C2_BAD_VALUE;
             }
@@ -1275,7 +1297,6 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
         }
         mpp_frame_set_buffer(frame, buffer);
         mpp_buffer_put(buffer);
-        native_handle_delete(grallocHandle);
         buffer = NULL;
     } else {
         mpp_frame_set_buffer(frame, NULL);
@@ -1308,8 +1329,14 @@ c2_status_t C2RKMpiEnc::encoder_getstream(const std::unique_ptr<C2Work> &work,
     } else {
         mEos = mpp_packet_get_eos(packet);
         uint64_t workId = (uint64_t)mpp_packet_get_pts(packet);
+        uint8_t *src = (uint8_t *)mpp_packet_get_data(packet);
         if (mEos == 1 && workId == 0){
             c2_err("eos with empty pkt!\n");
+            ret = C2_CORRUPTED;
+            goto __FAILED;
+        }
+        if (!src){
+            c2_err("src empty!\n");
             ret = C2_CORRUPTED;
             goto __FAILED;
         }

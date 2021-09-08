@@ -23,8 +23,9 @@
 
 int32_t rga_dev_open(void **rga_ctx);
 int32_t rga_dev_close(void *rga_ctx);
-void rga_rgb2nv12(RKVideoPlane *plane,  VPUMemLinear_t *vpumem , 
+void rga_rgb2nv12(RKVideoPlane *plane, VPUMemLinear_t *vpumem,
             uint32_t Width, uint32_t Height, uint32_t dstWidth, uint32_t dstHeight, void *rga_ctx);
-
+void rga_nv12_copy(RKVideoPlane *plane, VPUMemLinear_t *vpumem,
+            uint32_t Width, uint32_t Height, void* rga_ctx);
 #endif  // ANDROID_C2_RK_RGA_PROCESS_H__
 

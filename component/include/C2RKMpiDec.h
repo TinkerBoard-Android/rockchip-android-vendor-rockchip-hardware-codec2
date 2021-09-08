@@ -46,6 +46,8 @@ typedef struct _MpiCodecContext {
 constexpr uint32_t kDefaultOutputDelay = 16;
 constexpr uint32_t kMaxOutputDelay = 16;
 constexpr uint32_t kMaxReferenceCount = 16;
+constexpr uint32_t k4KMaxReferenceCount = 8;
+constexpr uint32_t kMaxBlockCount = 24;
 
 class C2RKMpiDec : public C2RKComponent {
 public:
@@ -82,8 +84,10 @@ private:
         uint32_t drainMode,
         const std::shared_ptr<C2BlockPool> &pool,
         const std::unique_ptr<C2Work> &work);
+    c2_status_t ensureMppGroupReadyWithoutSurface(const std::shared_ptr<C2BlockPool> &pool);
     c2_status_t ensureMppGroupReady(const std::shared_ptr<C2BlockPool> &pool);
-    c2_status_t registerBufferToMpp(std::shared_ptr<C2GraphicBlock> block, bool isLocalBuffer);
+    c2_status_t registerLocalBufferToMpp(std::shared_ptr<C2GraphicBlock> block);
+    c2_status_t registerBufferToMpp(std::shared_ptr<C2GraphicBlock> block);
 
 private:
     std::shared_ptr<IntfImpl> mIntf;
@@ -91,9 +95,10 @@ private:
     std::map<uint32_t, void *> mBufferMaps;
     std::map<void *, std::shared_ptr<C2GraphicBlock>> mBlockMaps;
     std::map<uint64_t, uint32_t> mFrameIndexMaps;
-    uint32_t mFindIndex; //for local buffer
     bool mOutputEos;
     bool mFlushed;
+    bool mIsLocalBuffer;
+    bool mLocalBufferReady;
 
     uint32_t mWidth;
     uint32_t mHeight;
