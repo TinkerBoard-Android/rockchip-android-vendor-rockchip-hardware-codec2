@@ -118,7 +118,7 @@ public:
                 .withDefault(new C2StreamPictureSizeInfo::input(0u, 1280, 720))
                 .withFields({
                     C2F(mSize, width).inRange(2, 1920, 2),
-                    C2F(mSize, height).inRange(2, 1088, 2),
+                    C2F(mSize, height).inRange(2, 1920, 2),
                 })
                 .withSetter(SizeSetter)
                 .build());
