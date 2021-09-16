@@ -32,6 +32,7 @@
 #include <C2RKInterface.h>
 #include <util/C2InterfaceHelper.h>
 #include <C2AllocatorGralloc.h>
+#include <ui/GraphicBufferMapper.h>
 
 #include "C2RKMpiEnc.h"
 #include <C2RKMediaDefs.h>
@@ -184,7 +185,7 @@ public:
             addParameter(
                     DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
                     .withDefault(new C2StreamProfileLevelInfo::output(
-                            0u, PROFILE_AVC_MAIN, LEVEL_AVC_4_1))
+                            0u, PROFILE_AVC_BASELINE, LEVEL_AVC_3_1))
                     .withFields({
                         C2F(mProfileLevel, profile).oneOf({
                             PROFILE_AVC_BASELINE,
@@ -736,7 +737,7 @@ c2_status_t C2RKMpiEnc::setVuiParams() {
     mpp_enc_cfg_set_s32(enc_cfg, "prep:range", range ? 2 : 0);
     mpp_enc_cfg_set_s32(enc_cfg, "prep:colorprim", primaries);
     mpp_enc_cfg_set_s32(enc_cfg, "prep:colortrc", transfer);
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:color", matrixCoeffs);
+    mpp_enc_cfg_set_s32(enc_cfg, "prep:colorspace", matrixCoeffs);
 
     return C2_OK;
 }
@@ -812,7 +813,7 @@ c2_status_t C2RKMpiEnc::initEncParams() {
         //     mBframes = maxBframes;
         // }
     }
-    gop = (mIDRInterval / mFrameRate->value < 8640000) ? mIDRInterval / mFrameRate->value : mFrameRate->value;
+    gop = (mIDRInterval  < 8640000) ? mIDRInterval : mFrameRate->value;
     mpp_enc_cfg_set_s32(enc_cfg, "rc:gop", gop);
     c2_info("(%s): bps %d fps %f gop %d\n",
             intf()->getName().c_str(), mBitrate->value, mFrameRate->value, gop);
@@ -893,9 +894,10 @@ c2_status_t C2RKMpiEnc::initEncoder() {
     }
 
     c2_info("%s %d in frame rate = %f", __FUNCTION__, __LINE__, mFrameRate->value);
-    c2_info("%s %d in bit rate = %d", __FUNCTION__, __LINE__, mBitrate->value);
+    c2_info("%s %d in bit rate = %d iInterval = %d", __FUNCTION__, __LINE__, mBitrate->value, mIDRInterval);
     c2_info("%s %d in width=%d, height=%d", __FUNCTION__, __LINE__, mSize->width, mSize->height);
     c2_info("%s %d in bitrate mode = %d", __FUNCTION__, __LINE__, (int)mBitrateMode->value);
+    c2_info("%s %d in profile = %d level = %d", __FUNCTION__, __LINE__, mEncProfile, mEncLevel);
 
     c2_status_t ret = C2_OK;
     int err = 0;
@@ -1022,9 +1024,9 @@ void C2RKMpiEnc::process(
           (int)work->input.ordinal.timestamp.peeku(),
           (int)work->input.ordinal.frameIndex.peeku(), work->input.flags);
 
-    if (mSignalledError || mSignalledEos) {
+    if (mSignalledError) {
         work->result = C2_BAD_VALUE;
-        c2_info("Signalled Error / Signalled Eos");
+        c2_info("Signalled Error");
         return;
     }
 
@@ -1180,7 +1182,7 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
     mpp_frame_set_hor_stride(frame, C2_ALIGN(width, 16));
     mpp_frame_set_ver_stride(frame, C2_ALIGN(height, 16));
     mpp_frame_set_pts(frame, workIndex);
-    mpp_frame_set_fmt(frame, MPP_FMT_YUV420P);
+    mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
 
     if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
         mpp_frame_set_eos(frame, 1);
@@ -1212,7 +1214,7 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
         inputBuffer = work->input.buffers[0];
         view = std::make_shared<const C2GraphicView>(
                 inputBuffer->data().graphicBlocks().front().map().get());
-        auto c2Handle = inputBuffer->data().graphicBlocks().front().handle();
+        const C2Handle *c2Handle = inputBuffer->data().graphicBlocks().front().handle();
         uint32_t bqSlot;
         uint32_t Width;
         uint32_t Height;
@@ -1223,7 +1225,24 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
         uint64_t bqId;
         android::_UnwrapNativeCodec2GrallocMetadata(
                 c2Handle, &Width, &Height, &Format, &usage, &Stride, &generation, &bqId, &bqSlot);
-        c2_trace("%s Width:%d Height:%d Format:%d Stride:%d", __func__, Width, Height, Format, Stride);
+        c2_trace("%s Width:%d Height:%d Format:%d Stride:%d usage:0x%x", __func__, Width, Height, Format, Stride, usage);
+        // Fix error for wifidisplay when Stride is 0
+        if (Stride == 0) {
+            native_handle_t *grallocHandle = UnwrapNativeCodec2GrallocHandle(c2Handle);
+            std::vector<ui::PlaneLayout> layouts;
+            buffer_handle_t bufferHandle;
+            GraphicBufferMapper &gm(GraphicBufferMapper::get());
+            gm.importBuffer(const_cast<native_handle_t *>(grallocHandle), Width, Height, 1,
+                                Format, usage, Stride, &bufferHandle);
+            gm.getPlaneLayouts(const_cast<native_handle_t *>(bufferHandle), &layouts);
+            if(layouts[0].sampleIncrementInBits != 0) {
+                Stride = layouts[0].strideInBytes * 8 / layouts[0].sampleIncrementInBits;
+            } else {
+                c2_err("layouts[0].sampleIncrementInBits = 0");
+                Stride = hor_stride;
+            }
+            gm.freeBuffer(bufferHandle);
+        }
         //convert rgb or yuv to nv12
         {
             RKVideoPlane *vplanes = (RKVideoPlane *)malloc(sizeof(RKVideoPlane));

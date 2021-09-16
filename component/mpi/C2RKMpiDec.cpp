@@ -29,9 +29,10 @@
 #include "C2RKMpiDec.h"
 #include "C2RKMediaDefs.h"
 #include "C2RKVersion.h"
+
 #define GRALLOC_USAGE_PRIVATE_2 1ULL << 30
 #define GRALLOC_USAGE_HW_TEXTURE 1ULL << 8
-#define GRALLOC_USAGE_EXTERNAL_DISP 1ULL << 13
+#define GRALLOC_USAGE_HW_COMPOSER 1ULL << 11
 
 namespace android {
 
@@ -272,42 +273,43 @@ C2RKMpiDec::IntfImpl::IntfImpl(
             })
             .withSetter(DefaultColorAspectsSetter)
             .build());
+    if (mediaType == MEDIA_MIMETYPE_VIDEO_AVC || mediaType == MEDIA_MIMETYPE_VIDEO_HEVC) {
+        addParameter(
+                DefineParam(mCodedColorAspects, C2_PARAMKEY_VUI_COLOR_ASPECTS)
+                .withDefault(new C2StreamColorAspectsInfo::input(
+                        0u, C2Color::RANGE_LIMITED, C2Color::PRIMARIES_UNSPECIFIED,
+                        C2Color::TRANSFER_UNSPECIFIED, C2Color::MATRIX_UNSPECIFIED))
+                .withFields({
+                    C2F(mCodedColorAspects, range).inRange(
+                                C2Color::RANGE_UNSPECIFIED,     C2Color::RANGE_OTHER),
+                    C2F(mCodedColorAspects, primaries).inRange(
+                                C2Color::PRIMARIES_UNSPECIFIED, C2Color::PRIMARIES_OTHER),
+                    C2F(mCodedColorAspects, transfer).inRange(
+                                C2Color::TRANSFER_UNSPECIFIED,  C2Color::TRANSFER_OTHER),
+                    C2F(mCodedColorAspects, matrix).inRange(
+                                C2Color::MATRIX_UNSPECIFIED,    C2Color::MATRIX_OTHER)
+                })
+                .withSetter(CodedColorAspectsSetter)
+                .build());
 
-    addParameter(
-            DefineParam(mCodedColorAspects, C2_PARAMKEY_VUI_COLOR_ASPECTS)
-            .withDefault(new C2StreamColorAspectsInfo::input(
-                    0u, C2Color::RANGE_LIMITED, C2Color::PRIMARIES_UNSPECIFIED,
-                    C2Color::TRANSFER_UNSPECIFIED, C2Color::MATRIX_UNSPECIFIED))
-            .withFields({
-                C2F(mCodedColorAspects, range).inRange(
-                            C2Color::RANGE_UNSPECIFIED,     C2Color::RANGE_OTHER),
-                C2F(mCodedColorAspects, primaries).inRange(
-                            C2Color::PRIMARIES_UNSPECIFIED, C2Color::PRIMARIES_OTHER),
-                C2F(mCodedColorAspects, transfer).inRange(
-                            C2Color::TRANSFER_UNSPECIFIED,  C2Color::TRANSFER_OTHER),
-                C2F(mCodedColorAspects, matrix).inRange(
-                            C2Color::MATRIX_UNSPECIFIED,    C2Color::MATRIX_OTHER)
-            })
-            .withSetter(CodedColorAspectsSetter)
-            .build());
-
-    addParameter(
-            DefineParam(mColorAspects, C2_PARAMKEY_COLOR_ASPECTS)
-            .withDefault(new C2StreamColorAspectsInfo::output(
-                    0u, C2Color::RANGE_UNSPECIFIED, C2Color::PRIMARIES_UNSPECIFIED,
-                    C2Color::TRANSFER_UNSPECIFIED, C2Color::MATRIX_UNSPECIFIED))
-            .withFields({
-                C2F(mColorAspects, range).inRange(
-                            C2Color::RANGE_UNSPECIFIED,     C2Color::RANGE_OTHER),
-                C2F(mColorAspects, primaries).inRange(
-                            C2Color::PRIMARIES_UNSPECIFIED, C2Color::PRIMARIES_OTHER),
-                C2F(mColorAspects, transfer).inRange(
-                            C2Color::TRANSFER_UNSPECIFIED,  C2Color::TRANSFER_OTHER),
-                C2F(mColorAspects, matrix).inRange(
-                            C2Color::MATRIX_UNSPECIFIED,    C2Color::MATRIX_OTHER)
-            })
-            .withSetter(ColorAspectsSetter, mDefaultColorAspects, mCodedColorAspects)
-            .build());
+        addParameter(
+                DefineParam(mColorAspects, C2_PARAMKEY_COLOR_ASPECTS)
+                .withDefault(new C2StreamColorAspectsInfo::output(
+                        0u, C2Color::RANGE_UNSPECIFIED, C2Color::PRIMARIES_UNSPECIFIED,
+                        C2Color::TRANSFER_UNSPECIFIED, C2Color::MATRIX_UNSPECIFIED))
+                .withFields({
+                    C2F(mColorAspects, range).inRange(
+                                C2Color::RANGE_UNSPECIFIED,     C2Color::RANGE_OTHER),
+                    C2F(mColorAspects, primaries).inRange(
+                                C2Color::PRIMARIES_UNSPECIFIED, C2Color::PRIMARIES_OTHER),
+                    C2F(mColorAspects, transfer).inRange(
+                                C2Color::TRANSFER_UNSPECIFIED,  C2Color::TRANSFER_OTHER),
+                    C2F(mColorAspects, matrix).inRange(
+                                C2Color::MATRIX_UNSPECIFIED,    C2Color::MATRIX_OTHER)
+                })
+                .withSetter(ColorAspectsSetter, mDefaultColorAspects, mCodedColorAspects)
+                .build());
+    }
 }
 
 C2RKMpiDec::C2RKMpiDec(
@@ -316,6 +318,8 @@ C2RKMpiDec::C2RKMpiDec(
         const std::shared_ptr<IntfImpl> &intfImpl)
     : C2RKComponent(std::make_shared<C2RKInterface<IntfImpl>>(name, id, intfImpl)),
       mIntf(intfImpl),
+      mPreGeneration(0),
+      mSurfaceChange(false),
       mOutputEos(false),
       mFlushed(false),
       mIsLocalBuffer(false),
@@ -407,10 +411,6 @@ c2_status_t C2RKMpiDec::onInit() {
         }
 
         C2StreamMaxReferenceCountTuning::output maxRefCount(0, kMaxReferenceCount);
-        if (mWidth >= 3840 || mHeight >= 3840) {
-            maxRefCount.value = k4KMaxReferenceCount;
-        }
-
         ret = mIntf->config({&maxRefCount}, C2_MAY_BLOCK, &failures);
         if (ret != C2_OK) {
             c2_err("max refs count config failed! ret=0x%x", ret);
@@ -456,19 +456,12 @@ __FAILED:
 
 c2_status_t C2RKMpiDec::onStop() {
     c2_info("%s in", __func__);
-    mSignalledOutputEos = false;
-    mOutputEos = false;
-    if (mCtx == NULL) {
-        return C2_OK;
-    }
+    c2_status_t ret = C2_OK;
 
-    MpiCodecContext* ctx = (MpiCodecContext*)mCtx;
-    int ret = ctx->mppMpi->reset(ctx->mppCtx);
-    if (MPP_OK != ret) {
-        c2_err("mpi->reset failed\n");
-        return C2_CORRUPTED;
-    }
-    return C2_OK;
+    if (!mFlushed)
+        ret = onFlush_sm();
+
+    return ret;
 }
 
 void C2RKMpiDec::onReset() {
@@ -508,23 +501,18 @@ c2_status_t C2RKMpiDec::onFlush_sm() {
     c2_status_t ret = C2_OK;
     MPP_RET err = MPP_OK;
 
-    mSignalledOutputEos = false;
-    mOutputEos = false;
-
     // all buffer should dec ref for frame group
-    for (const std::pair<uint32_t, void *> &it : mBufferMaps) {
-        mpp_buffer_put(it.second);
-    }
-
-    if (mIsLocalBuffer) {
-        for (const std::pair<void *, std::shared_ptr<C2GraphicBlock>> &it : mBlockMaps) {
-            mpp_buffer_put(it.first);
-        }
+    for (auto it = mBufferOwnByCodec2.begin(); it != mBufferOwnByCodec2.end(); it++) {
+        mpp_buffer_put(*it);
     }
 
     mBufferMaps.clear();
     mBlockMaps.clear();
-    mFrameIndexMaps.clear();
+    mBufferOwnByCodec2.clear();
+
+    mSignalledOutputEos = false;
+    mOutputEos = false;
+    mLocalBufferReady = false;
 
     C2StreamBlockCountInfo::output blockCount(0u);
     std::vector<std::unique_ptr<C2SettingResult>> failures;
@@ -545,6 +533,34 @@ c2_status_t C2RKMpiDec::onFlush_sm() {
         return C2_CORRUPTED;
     }
     mFlushed = true;
+    return ret;
+}
+
+c2_status_t C2RKMpiDec::flushWhenSurfaceChange() {
+    c2_info("%s in", __func__);
+    c2_status_t ret = C2_OK;
+
+    // all buffer should dec ref for frame group
+    for (auto it = mBufferOwnByCodec2.begin(); it != mBufferOwnByCodec2.end(); it++) {
+        mpp_buffer_put(*it);
+    }
+
+    mBufferMaps.clear();
+    mBlockMaps.clear();
+    mBufferOwnByCodec2.clear();
+    mSurfaceChange = false;
+    mPreGeneration = 0;
+
+    C2StreamBlockCountInfo::output blockCount(0u);
+    std::vector<std::unique_ptr<C2SettingResult>> failures;
+    ret = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
+    if (ret != C2_OK) {
+        c2_err("block count config failed!");
+        return C2_BAD_INDEX;
+    }
+
+    mpp_buffer_group_clear(mCtx->frameGroup);
+
     return ret;
 }
 
@@ -573,8 +589,7 @@ void C2RKMpiDec::finishWork(
         c2_err("empty block index:%d",index);
     }
     {
-        if (buffer && (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC
-            || mCodingType ==MPP_VIDEO_CodingMPEG2)) {
+        if (buffer && (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC)) {
             IntfImpl::Lock lock = mIntf->lock();
             buffer->setInfo(mIntf->getColorAspects_l());
         }
@@ -710,11 +725,12 @@ void C2RKMpiDec::process(
         if (err != C2_OK) {
             //TODO when err happen,do something
             c2_warn("can't ensure mpp group buffer enough! err=%d", err);
+            continue;
         }
         err = decode_sendstream(work);
         if (err != C2_OK) {
             // the work should be try again
-            c2_info("stream list is full,retry");
+            c2_trace("stream list is full,retry");
             usleep(5 * 1000);
         } else {
             pkt_done = 1;
@@ -722,7 +738,7 @@ void C2RKMpiDec::process(
         err = decode_getoutframe(work);
         if (err != C2_OK) {
             // nothing to do
-            c2_err("handle output work failed");
+            c2_trace("handle output work failed");
         }
     } while (!pkt_done);
 
@@ -794,8 +810,6 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
 
     frameindex = work->input.ordinal.frameIndex.peeku() & 0xFFFFFFFF;
     timestamps = work->input.ordinal.timestamp.peekll();
-    if (inSize != 0)
-        mFrameIndexMaps[timestamps] = frameindex;
 
     inData = const_cast<uint8_t *>(rView.data());
 
@@ -805,10 +819,13 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
         mpp_packet_set_eos(mppPkt);
     }
 
-    mpp_packet_set_pts(mppPkt, timestamps);
-    mpp_packet_set_dts(mppPkt, timestamps);
+    mpp_packet_set_pts(mppPkt, frameindex);
 
-    if (work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) {
+    // pkt with flag FLAG_DROP_FRAME should not be set to mpp
+    if (work->input.flags & C2FrameData::FLAG_DROP_FRAME) {
+        fillEmptyWork(work);
+        goto __FAILED;
+    } else if (work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) {
         mpp_packet_set_extra_data(mppPkt);
     }
 
@@ -817,17 +834,15 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
 
     err = mCtx->mppMpi->decode_put_packet(mCtx->mppCtx, mppPkt);
     if (MPP_OK != err) {
-        c2_warn("%s %d in put packet failed,retry!", __FUNCTION__, __LINE__);
+        c2_trace("%s %d in put packet failed,retry!", __FUNCTION__, __LINE__);
         ret = C2_NOT_FOUND;
         goto __FAILED;
     }else{
         if ((work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) != 0) {
-            mFrameIndexMaps.erase(work->input.ordinal.timestamp.peekll());
             fillEmptyWork(work);
         }
         if (mCodingType == MPP_VIDEO_CodingVP9) {
             if ((work->input.flags & FLAG_NON_DISPLAY_FRAME) != 0) {
-                mFrameIndexMaps.erase(work->input.ordinal.timestamp.peekll());
                 fillEmptyWork(work);
             }
         }
@@ -849,12 +864,12 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
 
     err = mCtx->mppMpi->decode_get_frame(mCtx->mppCtx, &mppFrame);
     if (MPP_OK != err || NULL == mppFrame) {
-        c2_info("mpp decode get frame failed,retry! ret: %d", err);
+        c2_trace("mpp decode get frame failed,retry! ret: %d", err);
         ret = C2_NOT_FOUND;
         goto __FAILED;
     }
 
-    infochange = (mWidth != mpp_frame_get_width(mppFrame) || mHeight != mpp_frame_get_height(mppFrame)) ? 1 : 0;
+    infochange = mpp_frame_get_info_change(mppFrame);
     if (infochange && !mpp_frame_get_eos(mppFrame)) {
         RK_U32 width = mpp_frame_get_width(mppFrame);
         RK_U32 height = mpp_frame_get_height(mppFrame);
@@ -868,6 +883,7 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
 
         mBufferMaps.clear();
         mBlockMaps.clear();
+        mBufferOwnByCodec2.clear();
         err = mpp_buffer_group_clear(mCtx->frameGroup);
         if (err) {
             c2_err("clear buffer group failed ret %d\n", ret);
@@ -917,53 +933,23 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
                            mpp_frame_get_errinfo(mppFrame),
                            mpp_frame_get_eos(mppFrame));
 
-        auto it_frameindex = mFrameIndexMaps.find((uint64_t)mpp_frame_get_pts(mppFrame));
+        uint64_t frameindex = (uint64_t)mpp_frame_get_pts(mppFrame);
         auto it = mBlockMaps.find(mpp_frame_get_buffer(mppFrame));
+        if (it == mBlockMaps.end()){
+            c2_err("not find block !");
+            goto __FAILED;
+        }
         if(!mpp_frame_get_eos(mppFrame)){
             if (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC)
                 (void)getVuiParams(&mppFrame);
-            if(it_frameindex != mFrameIndexMaps.end()){
-                c2_trace("frame index: %llu", (unsigned long long)it_frameindex->second);
-                finishWork((uint64_t)it_frameindex->second, work, it->second);
-                mFrameIndexMaps.erase(it_frameindex);
-                if (mIsLocalBuffer) {
-                    mpp_buffer_put(mpp_frame_get_buffer(mppFrame));
-                }
-            }else{
-                c2_trace("can not find frame index，drop！");
-                C2StreamBlockCountInfo::output blockCount(0u);
-                std::vector<std::unique_ptr<C2Param>> params;
-                c2_status_t err = intf()->query_vb(
-                                        { &blockCount },
-                                        {},
-                                        C2_DONT_BLOCK,
-                                        &params);
-
-                blockCount.value--;
-                std::vector<std::unique_ptr<C2SettingResult>> failures;
-                err = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
-                if (err != C2_OK) {
-                    c2_err("block count config failed!");
-                }
-                c2_trace("%s %d block count=%d", __FUNCTION__, __LINE__, blockCount.value);
-            }
         }else{
             mOutputEos = true;
-            if(it_frameindex != mFrameIndexMaps.end()){
-                c2_trace("frame index: %llu", (unsigned long long)it_frameindex->second);
-                finishWork((uint64_t)it_frameindex->second, work, it->second);
-                mFrameIndexMaps.erase(it_frameindex);
-                if (mIsLocalBuffer) {
-                    mpp_buffer_put(mpp_frame_get_buffer(mppFrame));
-                }
-            }
-            // for debug
-            // std::map<uint64_t, uint32_t>::iterator iter;
-            // for (iter = mFrameIndexMaps.begin();iter != mFrameIndexMaps.end(); iter ++ ) {
-            //     c2_info("first:%lld second:%d\n",iter->first,iter->second);
-            // }
-            c2_info("mpp_frame_get_eos true ! mFrameIndexMaps size:%d",mFrameIndexMaps.size());
+            c2_info("mpp_frame_get_eos true !");
         }
+        c2_trace("frame index: %llu", frameindex);
+        finishWork(frameindex, work, it->second);
+        mpp_buffer_inc_ref(mpp_frame_get_buffer(mppFrame));
+        mBufferOwnByCodec2.push_back(mpp_frame_get_buffer(mppFrame));
     }
 __FAILED:
     /*
@@ -983,6 +969,7 @@ c2_status_t C2RKMpiDec::drainInternal(
     const std::unique_ptr<C2Work> &work) {
     c2_trace("%s %d in", __FUNCTION__, __LINE__);
     c2_status_t ret = C2_OK;
+    uint32_t retry = 0;
 
     if (drainMode == NO_DRAIN) {
         c2_warn("drain with NO_DRAIN: no-op");
@@ -1007,7 +994,12 @@ c2_status_t C2RKMpiDec::drainInternal(
             c2_warn("can't ensure mpp group buffer enough! err=%d", ret);
         }
         ret = decode_getoutframe(work);
+        retry++;
         usleep(5 * 1000);
+
+        //avoid infinite loop
+        if (retry > kMaxRetryNum)
+            mOutputEos = true;
         if(mOutputEos)
             fillEmptyWork(work);
     }
@@ -1120,7 +1112,7 @@ c2_status_t C2RKMpiDec::ensureMppGroupReady(
         return ret;
     }
     C2MemoryUsage usage = { C2MemoryUsage::CPU_READ, C2MemoryUsage::CPU_WRITE };
-    usage.expected |= (GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_EXTERNAL_DISP | GRALLOC_USAGE_PRIVATE_2);
+    usage.expected |= (GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER | GRALLOC_USAGE_PRIVATE_2);
     uint32_t i = 0;
     uint32_t count = 0;
     // TODO: it should use max reference count
@@ -1142,6 +1134,11 @@ c2_status_t C2RKMpiDec::ensureMppGroupReady(
             break;
         }
         count++;
+    }
+
+    if (ret != C2_OK && mSurfaceChange) {
+        flushWhenSurfaceChange();
+        return ret;
     }
 
     blockCount.value += count;
@@ -1225,7 +1222,15 @@ c2_status_t C2RKMpiDec::registerBufferToMpp(std::shared_ptr<C2GraphicBlock> bloc
     android::_UnwrapNativeCodec2GrallocMetadata(
             block->handle(), &width, &height, &format, &usage, &stride, &generation, &bqId, &bqSlot);
 
-    c2_trace("%s %d bqId:%lld bqSLOT:%ld shareFd：%d", __func__, __LINE__, (unsigned long long)bqId,
+    if (mPreGeneration == 0)
+        mPreGeneration = generation;
+    if (mPreGeneration != generation) {
+        mPreGeneration = generation;
+        mSurfaceChange = true;
+        c2_err("surface changed !");
+        return C2_CORRUPTED;
+    }
+    c2_trace("%s %d generation:%ld bqId:%lld bqslot:%ld shareFd：%d", __func__, __LINE__, (unsigned long)generation, (unsigned long long)bqId,
             (unsigned long)bqSlot, shareFd);
     std::map<uint32_t, void *>::iterator it;
     findIndex = bqSlot;
@@ -1235,6 +1240,7 @@ c2_status_t C2RKMpiDec::registerBufferToMpp(std::shared_ptr<C2GraphicBlock> bloc
         MppBuffer mppBuffer = it->second;
         if (mppBuffer) {
             mpp_buffer_put(mppBuffer);
+            mBufferOwnByCodec2.remove(mppBuffer);
         }
         mBlockMaps[mppBuffer] = block;
         c2_trace("%s %d mppBuffer: %p outBlock: %p block fd=%d slot=%d",

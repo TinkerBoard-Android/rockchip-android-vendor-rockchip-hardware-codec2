@@ -14,11 +14,13 @@ cc_library_static {
 
     shared_libs: [
         "libmpp",
-        "librga"
+        "librga",
+        "libui",
     ],
 
     header_libs: [
         "libhardware_rockchip_headers",
+        "libui_headers",
     ],
 
     include_dirs: [

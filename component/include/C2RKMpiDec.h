@@ -48,6 +48,7 @@ constexpr uint32_t kMaxOutputDelay = 16;
 constexpr uint32_t kMaxReferenceCount = 16;
 constexpr uint32_t k4KMaxReferenceCount = 8;
 constexpr uint32_t kMaxBlockCount = 24;
+constexpr uint32_t kMaxRetryNum = 50;
 
 class C2RKMpiDec : public C2RKComponent {
 public:
@@ -76,6 +77,7 @@ private:
             uint64_t index,
             const std::unique_ptr<C2Work> &work,
             const std::shared_ptr<C2GraphicBlock> block);
+    c2_status_t flushWhenSurfaceChange();
     void fillEmptyWork(const std::unique_ptr<C2Work> &work);
     bool getVuiParams(MppFrame *frame);
     c2_status_t decode_sendstream(const std::unique_ptr<C2Work> &work);
@@ -94,7 +96,9 @@ private:
 
     std::map<uint32_t, void *> mBufferMaps;
     std::map<void *, std::shared_ptr<C2GraphicBlock>> mBlockMaps;
-    std::map<uint64_t, uint32_t> mFrameIndexMaps;
+    std::list<void *> mBufferOwnByCodec2;
+    uint32_t mPreGeneration;
+    bool mSurfaceChange;
     bool mOutputEos;
     bool mFlushed;
     bool mIsLocalBuffer;
