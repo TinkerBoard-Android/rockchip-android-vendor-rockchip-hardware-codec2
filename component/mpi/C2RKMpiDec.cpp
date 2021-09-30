@@ -671,6 +671,7 @@ void C2RKMpiDec::process(
         const std::shared_ptr<C2BlockPool> &pool) {
     c2_status_t err             = C2_OK;
     uint32_t pkt_done           = 0;
+    uint32_t retry              = 0;
     mFlushed = false;
     // Initialize output work
     work->result = C2_OK;
@@ -731,7 +732,9 @@ void C2RKMpiDec::process(
         if (err != C2_OK) {
             // the work should be try again
             c2_trace("stream list is full,retry");
+            retry++;
             usleep(5 * 1000);
+            if(retry > kMaxRetryNum) pkt_done = 1;
         } else {
             pkt_done = 1;
         }
@@ -746,6 +749,8 @@ void C2RKMpiDec::process(
         drainInternal(DRAIN_COMPONENT_WITH_EOS, pool, work);
         mSignalledOutputEos = true;
     } else if (eos && mOutputEos) {
+        fillEmptyWork(work);
+    } else if (retry > kMaxRetryNum) {
         fillEmptyWork(work);
     }
 
@@ -948,8 +953,10 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
         }
         c2_trace("frame index: %llu", frameindex);
         finishWork(frameindex, work, it->second);
-        mpp_buffer_inc_ref(mpp_frame_get_buffer(mppFrame));
-        mBufferOwnByCodec2.push_back(mpp_frame_get_buffer(mppFrame));
+        if (!mIsLocalBuffer) {
+            mpp_buffer_inc_ref(mpp_frame_get_buffer(mppFrame));
+            mBufferOwnByCodec2.push_back(mpp_frame_get_buffer(mppFrame));
+        }
     }
 __FAILED:
     /*
