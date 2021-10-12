@@ -1059,6 +1059,17 @@ void C2RKMpiEnc::process(
             work->workletsProcessed = 1u;
             return;
         }
+        const C2GraphicView *const input = view.get();
+        if ((input != nullptr) && (input->width() < mSize->width ||
+            input->height() < mSize->height)) {
+            /* Expect width height to be configured */
+            c2_err("unexpected Capacity Aspect %d(%d) x %d(%d)", input->width(),
+                mSize->width, input->height(), mSize->height);
+            mSignalledError = true;
+            work->result = C2_CORRUPTED;
+            work->workletsProcessed = 1u;
+            return;
+        }
     }
 
     //get sps/pps para
