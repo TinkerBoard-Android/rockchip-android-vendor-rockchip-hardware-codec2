@@ -78,7 +78,7 @@ private:
             const std::unique_ptr<C2Work> &work,
             const std::shared_ptr<C2GraphicBlock> block);
     c2_status_t flush();
-    c2_status_t flushWhenGenerationChange();
+    c2_status_t flushWhenGenerationChange(C2OperatorType type);
     void fillEmptyWork(const std::unique_ptr<C2Work> &work);
     bool getVuiParams(MppFrame *frame);
     c2_status_t decode_sendstream(const std::unique_ptr<C2Work> &work);
@@ -97,6 +97,8 @@ private:
 
     std::map<uint32_t, void *> mBufferMaps;
     std::map<void *, std::shared_ptr<C2GraphicBlock>> mBlockMaps;
+    std::map<uint64_t, uint64_t> mPtsMaps;
+    int64_t mLastPts;
     uint32_t mPreGeneration;
     bool mSurfaceChange;
     bool mOutputEos;

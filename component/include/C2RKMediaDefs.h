@@ -23,6 +23,11 @@
 #include <C2.h>
 #include <C2RKComponent.h>
 
+enum C2OperatorType {
+    C2_OP_INTERNAL      =0,
+    C2_OP_UI
+};
+
 typedef struct VPUMem {
     uint32_t  phy_addr;
     uint32_t *vir_addr;
@@ -52,8 +57,8 @@ extern const char *C2_RK_VP8_DEC_COMPONENT_NAME;
 extern const char *C2_RK_MPEG2_DEC_COMPONENT_NAME;
 extern const char *C2_RK_MPEG4_DEC_COMPONENT_NAME;
 extern const char *C2_RK_H263_DEC_COMPONENT_NAME;
-
 extern const char *C2_RK_AVC_ENC_COMPONENT_NAME;
+extern const char *C2_RK_HEVC_ENC_COMPONENT_NAME;
 
 static const struct CodingNameMapEntry {
     C2String        componentName;
@@ -67,8 +72,8 @@ static const struct CodingNameMapEntry {
     { C2_RK_MPEG2_DEC_COMPONENT_NAME, MPP_VIDEO_CodingMPEG2, MEDIA_MIMETYPE_VIDEO_MPEG2 },
     { C2_RK_MPEG4_DEC_COMPONENT_NAME, MPP_VIDEO_CodingMPEG4, MEDIA_MIMETYPE_VIDEO_MPEG4 },
     { C2_RK_H263_DEC_COMPONENT_NAME, MPP_VIDEO_CodingH263, MEDIA_MIMETYPE_VIDEO_H263 },
-
-    { C2_RK_AVC_ENC_COMPONENT_NAME, MPP_VIDEO_CodingAVC, MEDIA_MIMETYPE_VIDEO_AVC }
+    { C2_RK_AVC_ENC_COMPONENT_NAME, MPP_VIDEO_CodingAVC, MEDIA_MIMETYPE_VIDEO_AVC },
+    { C2_RK_HEVC_ENC_COMPONENT_NAME, MPP_VIDEO_CodingHEVC, MEDIA_MIMETYPE_VIDEO_HEVC }
 };
 
 int getCodingTypeFromComponentName(C2String componentName, MppCodingType *codingType);

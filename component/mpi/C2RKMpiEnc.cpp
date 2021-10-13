@@ -846,8 +846,14 @@ c2_status_t C2RKMpiEnc::initEncParams() {
         mpp_enc_cfg_set_s32(enc_cfg, "vp8:qp_max_i", 127);
     } break;
     case MPP_VIDEO_CodingHEVC : {
-        mpp_enc_cfg_set_s32(enc_cfg, "h265.change", 10);
-        mpp_enc_cfg_set_s32(enc_cfg, "h265.intra_qp", MPP_ENC_JPEG_CFG_CHANGE_QP);
+        mpp_enc_cfg_set_s32(enc_cfg, "h265:profile", mEncProfile);
+        mpp_enc_cfg_set_s32(enc_cfg, "h265:level", mEncLevel);
+        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_init", 26);
+        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_min", 10);
+        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_max", 49);
+        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_min_i", 15);
+        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_max_i", 51);
+        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_delta_ip", 4);
     } break;
     default : {
         c2_err("support encoder coding type %d\n", mCodingType);
@@ -1175,7 +1181,7 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
     uint32_t width = mSize->width;
     uint32_t height = mSize->height;
     uint32_t hor_stride = C2_ALIGN(width, 16);
-    uint32_t ver_stride = C2_ALIGN(height, 16);
+    uint32_t ver_stride = C2_ALIGN(height, 8);
     uint64_t workIndex = work->input.ordinal.frameIndex.peekull();
 
     err = mpp_frame_init(&frame);
@@ -1191,7 +1197,7 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
     mpp_frame_set_width(frame, width);
     mpp_frame_set_height(frame, height);
     mpp_frame_set_hor_stride(frame, C2_ALIGN(width, 16));
-    mpp_frame_set_ver_stride(frame, C2_ALIGN(height, 16));
+    mpp_frame_set_ver_stride(frame, C2_ALIGN(height, 8));
     mpp_frame_set_pts(frame, workIndex);
     mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
 
@@ -1253,6 +1259,7 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
                 Stride = hor_stride;
             }
             gm.freeBuffer(bufferHandle);
+            native_handle_delete(grallocHandle);
         }
         //convert rgb or yuv to nv12
         {
@@ -1293,14 +1300,9 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
                         fflush(mFp_enc_in);
                     }
                     if (Format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
-                        if (Width != Stride || (Height & 0xf)) {
-                            rga_nv12_copy(vplanes, mVpumem, Width, Height, mRgaCtx);
-                            inputCommit.fd = mVpumem->phy_addr;
-                            inputCommit.size = Width * Height * 3 / 2;
-                        } else {
-                            inputCommit.size = width * height * 3 / 2;
-                            inputCommit.fd = c2Handle->data[0];
-                        }
+                        rga_nv12_copy(vplanes, mVpumem, hor_stride, ver_stride, mRgaCtx);
+                        inputCommit.fd = mVpumem->phy_addr;
+                        inputCommit.size = hor_stride * ver_stride * 3 / 2;
                     } else {
                         //TODO: if(input->width() != width) do more(rga_nv12_copy)?
                         inputCommit.size = width * height * 3/2;
@@ -1360,13 +1362,14 @@ c2_status_t C2RKMpiEnc::encoder_getstream(const std::unique_ptr<C2Work> &work,
         mEos = mpp_packet_get_eos(packet);
         uint64_t workId = (uint64_t)mpp_packet_get_pts(packet);
         uint8_t *src = (uint8_t *)mpp_packet_get_data(packet);
+        size_t len  = mpp_packet_get_length(packet);
         if (mEos == 1 && workId == 0){
             c2_err("eos with empty pkt!\n");
             ret = C2_CORRUPTED;
             goto __FAILED;
         }
-        if (!src){
-            c2_err("src empty!\n");
+        if (!src || (len == 0)) {
+            c2_err("src empty or len = 0!\n");
             ret = C2_CORRUPTED;
             goto __FAILED;
         }

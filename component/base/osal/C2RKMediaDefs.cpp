@@ -33,8 +33,8 @@ const char *C2_RK_VP8_DEC_COMPONENT_NAME = "c2.rk.vp8.decoder";
 const char *C2_RK_MPEG2_DEC_COMPONENT_NAME = "c2.rk.mpeg2.decoder";
 const char *C2_RK_MPEG4_DEC_COMPONENT_NAME = "c2.rk.m4v.decoder";
 const char *C2_RK_H263_DEC_COMPONENT_NAME = "c2.rk.h263.decoder";
-
 const char *C2_RK_AVC_ENC_COMPONENT_NAME = "c2.rk.avc.encoder";
+const char *C2_RK_HEVC_ENC_COMPONENT_NAME = "c2.rk.hevc.encoder";
 
 int getCodingTypeFromComponentName(
         C2String componentName, MppCodingType *codingType) {

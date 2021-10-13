@@ -318,6 +318,7 @@ C2RKMpiDec::C2RKMpiDec(
         const std::shared_ptr<IntfImpl> &intfImpl)
     : C2RKComponent(std::make_shared<C2RKInterface<IntfImpl>>(name, id, intfImpl)),
       mIntf(intfImpl),
+      mLastPts(-1),
       mPreGeneration(0),
       mSurfaceChange(false),
       mOutputEos(false),
@@ -498,7 +499,7 @@ void C2RKMpiDec::onRelease() {
 
 c2_status_t C2RKMpiDec::onFlush_sm() {
     c2_status_t ret = C2_OK;
-    ret = flushWhenGenerationChange();
+    ret = flushWhenGenerationChange(C2_OP_UI);
     return ret;
 }
 
@@ -509,6 +510,7 @@ c2_status_t C2RKMpiDec::flush() {
 
     mBufferMaps.clear();
     mBlockMaps.clear();
+    mPtsMaps.clear();
 
     mSignalledOutputEos = false;
     mOutputEos = false;
@@ -536,15 +538,18 @@ c2_status_t C2RKMpiDec::flush() {
     return ret;
 }
 
-c2_status_t C2RKMpiDec::flushWhenGenerationChange() {
+c2_status_t C2RKMpiDec::flushWhenGenerationChange(C2OperatorType type) {
     c2_info("%s in", __func__);
     c2_status_t ret = C2_OK;
     MPP_RET err = MPP_OK;
 
     mBufferMaps.clear();
     mBlockMaps.clear();
-    mSurfaceChange = false;
-    mPreGeneration = 0;
+    mPtsMaps.clear();
+    if(type == C2_OP_INTERNAL){
+        mSurfaceChange = false;
+        mPreGeneration = 0;
+    }
     mLocalBufferReady = false;
 
     C2StreamBlockCountInfo::output blockCount(0u);
@@ -556,7 +561,8 @@ c2_status_t C2RKMpiDec::flushWhenGenerationChange() {
     }
 
     mpp_buffer_group_clear(mCtx->frameGroup);
-    if(mOutputEos) {
+
+    if (((type == C2_OP_INTERNAL) && mOutputEos) || type == C2_OP_UI) {
         mSignalledOutputEos = false;
         mOutputEos = false;
         err = mCtx->mppMpi->reset(mCtx->mppCtx);
@@ -813,7 +819,7 @@ bool C2RKMpiDec::getVuiParams(MppFrame *frame) {
 
 c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
     uint64_t     timestamps  = -1ll;
-    uint32_t     frameindex = -1ll;
+    uint64_t     frameindex = -1ll;
     uint8_t     *inData     = NULL;
     size_t      inSize      = 0u;
     MppPacket   mppPkt      = NULL;
@@ -826,24 +832,19 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
         inSize = rView.capacity();
     }
 
-    frameindex = work->input.ordinal.frameIndex.peeku() & 0xFFFFFFFF;
+    frameindex = work->input.ordinal.frameIndex.peekull();
     timestamps = work->input.ordinal.timestamp.peekll();
 
     inData = const_cast<uint8_t *>(rView.data());
-
     mpp_packet_init(&mppPkt, inData, inSize);
 
     if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
         mpp_packet_set_eos(mppPkt);
     }
 
-    mpp_packet_set_pts(mppPkt, frameindex);
+    mpp_packet_set_pts(mppPkt, timestamps);
 
-    // pkt with flag FLAG_DROP_FRAME should not be set to mpp
-    if (work->input.flags & C2FrameData::FLAG_DROP_FRAME) {
-        // fillEmptyWork(work);
-        // goto __FAILED;
-    } else if (work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) {
+    if (work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) {
         mpp_packet_set_extra_data(mppPkt);
     }
 
@@ -856,6 +857,15 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
         ret = C2_NOT_FOUND;
         goto __FAILED;
     }else{
+        if (!(work->input.flags & (C2FrameData::FLAG_CODEC_CONFIG | FLAG_NON_DISPLAY_FRAME))){
+            mPtsMaps[frameindex] = timestamps;
+            if(mLastPts != timestamps) {
+                mLastPts = timestamps;
+            }else{
+                //return this work when timestamps repeat
+                fillEmptyWork(work);
+            }
+        }
         if ((work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) != 0) {
             fillEmptyWork(work);
         }
@@ -959,7 +969,26 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
                            mpp_frame_get_errinfo(mppFrame),
                            mpp_frame_get_eos(mppFrame));
 
-        uint64_t frameindex = (uint64_t)mpp_frame_get_pts(mppFrame);
+        uint64_t timestamp = (uint64_t)mpp_frame_get_pts(mppFrame);
+        uint64_t workIndex = -1;
+        for (auto it_ts = mPtsMaps.begin(); it_ts != mPtsMaps.end(); it_ts++) {
+            if (timestamp == it_ts->second) {
+                workIndex = it_ts->first;
+                mPtsMaps.erase(it_ts);
+                break;
+            }
+        }
+        if (workIndex == -1){
+            c2_err("not find timestamp:%llu !", timestamp);
+            for (auto it_ts = mPtsMaps.begin(); it_ts != mPtsMaps.end(); it_ts++) {
+                if (0 == it_ts->second) {
+                    workIndex = it_ts->first;
+                    mPtsMaps.erase(it_ts);
+                    break;
+                }
+            }
+            //goto __FAILED;
+        }
         auto it = mBlockMaps.find(mpp_frame_get_buffer(mppFrame));
         if (it == mBlockMaps.end()){
             c2_err("not find block !");
@@ -972,8 +1001,8 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
             mOutputEos = true;
             c2_info("mpp_frame_get_eos true !");
         }
-        c2_trace("frame index: %llu", frameindex);
-        finishWork(frameindex, work, it->second);
+        c2_trace("frame index: %llu", workIndex);
+        finishWork(workIndex, work, it->second);
     }
 __FAILED:
     /*
@@ -1169,7 +1198,7 @@ c2_status_t C2RKMpiDec::ensureMppGroupReady(
     }
 
     if (ret != C2_OK && mSurfaceChange) {
-        flushWhenGenerationChange();
+        flushWhenGenerationChange(C2_OP_INTERNAL);
         return ret;
     }
 
