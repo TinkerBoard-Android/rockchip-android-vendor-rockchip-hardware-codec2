@@ -30,9 +30,9 @@
 #include "C2RKMediaDefs.h"
 #include "C2RKVersion.h"
 
-#define GRALLOC_USAGE_PRIVATE_2 1ULL << 30
-#define GRALLOC_USAGE_HW_TEXTURE 1ULL << 8
-#define GRALLOC_USAGE_HW_COMPOSER 1ULL << 11
+#define GRALLOC_USAGE_HW_TEXTURE            1ULL << 8
+#define GRALLOC_USAGE_HW_COMPOSER           1ULL << 11
+#define RK_GRALLOC_USAGE_SPECIFY_STRIDE     1ULL << 30
 
 namespace android {
 
@@ -1070,12 +1070,15 @@ c2_status_t C2RKMpiDec::ensureMppGroupReadyWithoutSurface(
         return ret;
     }
 
-    C2MemoryUsage usage = { C2MemoryUsage::CPU_READ, C2MemoryUsage::CPU_WRITE };
+    uint32_t usage = (GRALLOC_USAGE_SW_READ_OFTEN
+                      | GRALLOC_USAGE_SW_WRITE_OFTEN
+                      | RK_GRALLOC_USAGE_SPECIFY_STRIDE);
+
     for (uint32_t i = 0; i < kMaxBlockCount; i++) {
         ret = pool->fetchGraphicBlock(frameW,
                                       frameH,
                                       format,
-                                      usage,
+                                      C2AndroidMemoryUsage::FromGrallocUsage(usage),
                                       &outblock);
         if (ret != C2_OK) {
             c2_warn("fetchGraphicBlock for Output failed with status %d", ret);
@@ -1135,16 +1138,21 @@ c2_status_t C2RKMpiDec::ensureMppGroupReady(
         // nothing todo
         return ret;
     }
-    C2MemoryUsage usage = { C2MemoryUsage::CPU_READ, C2MemoryUsage::CPU_WRITE };
-    usage.expected |= (GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER | GRALLOC_USAGE_PRIVATE_2);
+
     uint32_t i = 0;
     uint32_t count = 0;
+    uint32_t usage = (GRALLOC_USAGE_SW_READ_OFTEN
+                      | GRALLOC_USAGE_SW_WRITE_OFTEN
+                      | GRALLOC_USAGE_HW_TEXTURE
+                      | GRALLOC_USAGE_HW_COMPOSER
+                      | RK_GRALLOC_USAGE_SPECIFY_STRIDE);
+
     // TODO: it should use max reference count
     for (i = 0; i < maxRefsCount.value - blockCount.value; i++) {
         ret = pool->fetchGraphicBlock(frameW,
                                       frameH,
                                       format,
-                                      usage,
+                                      C2AndroidMemoryUsage::FromGrallocUsage(usage),
                                       &outblock);
         if (ret != C2_OK) {
             c2_warn("fetchGraphicBlock for Output failed with status %d", ret);
