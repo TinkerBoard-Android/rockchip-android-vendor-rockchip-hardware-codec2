@@ -993,11 +993,11 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
         if (it == mBlockMaps.end()){
             c2_err("not find block !");
             goto __FAILED;
-        }
-        if(!mpp_frame_get_eos(mppFrame)){
+        } else {
             if (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC)
                 (void)getVuiParams(&mppFrame);
-        }else{
+        }
+        if (mpp_frame_get_eos(mppFrame)) {
             mOutputEos = true;
             c2_info("mpp_frame_get_eos true !");
         }
