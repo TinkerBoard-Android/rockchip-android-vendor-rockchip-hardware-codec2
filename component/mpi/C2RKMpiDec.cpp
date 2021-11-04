@@ -273,7 +273,8 @@ C2RKMpiDec::IntfImpl::IntfImpl(
             })
             .withSetter(DefaultColorAspectsSetter)
             .build());
-    if (mediaType == MEDIA_MIMETYPE_VIDEO_AVC || mediaType == MEDIA_MIMETYPE_VIDEO_HEVC) {
+    if (mediaType == MEDIA_MIMETYPE_VIDEO_AVC || mediaType == MEDIA_MIMETYPE_VIDEO_HEVC
+        || mediaType == MEDIA_MIMETYPE_VIDEO_MPEG2) {
         addParameter(
                 DefineParam(mCodedColorAspects, C2_PARAMKEY_VUI_COLOR_ASPECTS)
                 .withDefault(new C2StreamColorAspectsInfo::input(
@@ -600,7 +601,8 @@ void C2RKMpiDec::finishWork(
         c2_err("empty block index:%d",index);
     }
     {
-        if (buffer && (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC)) {
+        if (buffer && (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC
+            || mCodingType == MPP_VIDEO_CodingMPEG2)) {
             IntfImpl::Lock lock = mIntf->lock();
             buffer->setInfo(mIntf->getColorAspects_l());
         }
@@ -786,7 +788,8 @@ bool C2RKMpiDec::getVuiParams(MppFrame *frame) {
     vuiColorAspects.primaries = mpp_frame_get_color_primaries(*frame);
     vuiColorAspects.transfer = mpp_frame_get_color_trc(*frame);
     vuiColorAspects.coeffs = mpp_frame_get_colorspace(*frame);
-    vuiColorAspects.fullRange = (mpp_frame_get_color_range(*frame) == MPP_FRAME_RANGE_JPEG);
+    vuiColorAspects.fullRange = (mCodingType == MPP_VIDEO_CodingMPEG2) ? false :
+        (mpp_frame_get_color_range(*frame) == MPP_FRAME_RANGE_JPEG);
 
     c2_trace("pri:%d tra:%d coeff:%d range:%d",vuiColorAspects.primaries, vuiColorAspects.transfer,
         vuiColorAspects.coeffs, vuiColorAspects.fullRange);
@@ -994,7 +997,8 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
             c2_err("not find block !");
             goto __FAILED;
         } else {
-            if (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC)
+            if (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC
+                || mCodingType == MPP_VIDEO_CodingMPEG2)
                 (void)getVuiParams(&mppFrame);
         }
         if (mpp_frame_get_eos(mppFrame)) {
