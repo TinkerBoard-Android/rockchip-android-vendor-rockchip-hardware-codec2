@@ -26,6 +26,7 @@ cc_library_shared {
         "libmpp",
         "librga",
         "libui",
+        "libgralloc_priv",
     ],
 
     export_include_dirs: [

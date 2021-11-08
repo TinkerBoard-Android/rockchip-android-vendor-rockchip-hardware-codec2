@@ -157,33 +157,5 @@ uint32_t colorFormatMpiToAndroid(const uint32_t format) {
     return androidFormat;
 }
 
-int32_t VPUMallocLinear(VPUMemLinear_t *p, uint32_t size)
-{
-    int ret = 0;
-    MppBuffer buffer = NULL;
-    ret = mpp_buffer_get(NULL, &buffer, size);
-    if (ret != MPP_OK) {
-        return -1;
-    }
-    p->phy_addr = (uint32_t)mpp_buffer_get_fd(buffer);
-    p->vir_addr = (uint32_t*)mpp_buffer_get_ptr(buffer);
-    p->size = size;
-    p->offset = (uint32_t*)buffer;
-    return 0;
-}
-
-int32_t VPUFreeLinear(VPUMemLinear_t *p)
-{
-    if (p->offset != NULL) {
-        MppBuffer buf = (MppBuffer)p->offset;
-        c2_trace("p %p buffer %p\n", p, buf);
-        if (buf != NULL) {
-            mpp_buffer_put(buf);
-            memset(p, 0, sizeof(VPUMemLinear_t));
-        }
-    }
-    return 0;
-}
-
 }
 

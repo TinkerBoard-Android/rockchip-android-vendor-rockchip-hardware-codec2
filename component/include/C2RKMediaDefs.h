@@ -28,12 +28,11 @@ enum C2OperatorType {
     C2_OP_UI
 };
 
-typedef struct VPUMem {
-    uint32_t  phy_addr;
-    uint32_t *vir_addr;
-    uint32_t  size;
-    uint32_t *offset;
-} VPUMemLinear_t;
+typedef struct _RKMemLinear {
+    int32_t  phyAddr;
+    int32_t  size;
+    void    *windowBuf;
+} RKMemLinear;
 
 typedef struct _RKVideoPlane {
     void        *addr;
@@ -82,8 +81,6 @@ int getKindFromComponentName(C2String componentName, C2Component::kind_t *kind);
 int getDomainFromComponentName(C2String componentName, C2Component::domain_t *domain);
 
 uint32_t colorFormatMpiToAndroid(const uint32_t format);
-int32_t VPUMallocLinear(VPUMemLinear_t *p, uint32_t size);
-int32_t VPUFreeLinear(VPUMemLinear_t *p);
 
 }  // namespace android
 

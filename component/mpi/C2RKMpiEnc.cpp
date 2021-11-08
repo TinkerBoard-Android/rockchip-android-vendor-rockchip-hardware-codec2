@@ -33,6 +33,8 @@
 #include <util/C2InterfaceHelper.h>
 #include <C2AllocatorGralloc.h>
 #include <ui/GraphicBufferMapper.h>
+#include <ui/GraphicBufferAllocator.h>
+#include <gralloc_priv_omx.h>
 
 #include "hardware/hardware_rockchip.h"
 #include "C2RKMpiEnc.h"
@@ -44,6 +46,8 @@
 #include "C2RKEnv.h"
 #include "C2RKVideoGlobal.h"
 #include "C2RKVersion.h"
+
+#define RK_GRALLOC_USAGE_WITHIN_4G   (1ULL << 56)
 
 namespace android {
 
@@ -886,15 +890,19 @@ __RETURN:
 
 c2_status_t C2RKMpiEnc::initEncoder() {
     c2_info("%s %d in", __FUNCTION__, __LINE__);
-    MppCodingType type = mCodingType;
+
+    c2_status_t ret = C2_OK;
+    int err = 0;
+    MppPollType timeout = MPP_POLL_BLOCK;
+
     {
         IntfImpl::Lock lock = mIntf->lock();
         mSize = mIntf->getSize_l();
         mBitrateMode = mIntf->getBitrateMode_l();
         mBitrate = mIntf->getBitrate_l();
         mFrameRate = mIntf->getFrameRate_l();
-        mEncProfile = mIntf->getProfile_l(type);
-        mEncLevel = mIntf->getLevel_l(type);
+        mEncProfile = mIntf->getProfile_l(mCodingType);
+        mEncLevel = mIntf->getLevel_l(mCodingType);
         mIDRInterval = mIntf->getSyncFramePeriod_l();
         mIInterval = mIntf->getSyncFramePeriod_l();
         mGop = mIntf->getGop_l();
@@ -908,24 +916,43 @@ c2_status_t C2RKMpiEnc::initEncoder() {
     c2_info("%s %d in bitrate mode = %d", __FUNCTION__, __LINE__, (int)mBitrateMode->value);
     c2_info("%s %d in profile = %d level = %d", __FUNCTION__, __LINE__, mEncProfile, mEncLevel);
 
-    c2_status_t ret = C2_OK;
-    int err = 0;
-    uint32_t width = mSize->width;
-    uint32_t height = mSize->height;
-    MppPollType timeout = MPP_POLL_BLOCK;
     //open rga
     if (rga_dev_open(&mRgaCtx)  < 0) {
         c2_err("open rga device fail!");
     }
 
-    //init vpumem for mpp input
-    mVpumem = (VPUMemLinear_t*)malloc(sizeof( VPUMemLinear_t));
-    err = VPUMallocLinear(mVpumem, ((width + 15) & 0xfff0) * height * 4);
-    if (err) {
-        c2_err("VPUMallocLinear failed\n");
-        ret = C2_CORRUPTED;
+    /*
+     * create vpumem for mpp input
+     *
+     * NOTE: We need temporary buffer to store rga nv12 output for some rgba input,
+     * since mpp can't process rgba input properly. in addition to this, alloc buffer
+     * within 4G in view of rga efficiency.
+     */
+    buffer_handle_t bufferHandle;
+    gralloc_private_handle_t privHandle;
+    uint32_t stride = 0;
+
+    uint64_t usage = (GRALLOC_USAGE_SW_READ_OFTEN
+                      | GRALLOC_USAGE_SW_WRITE_OFTEN
+                      | RK_GRALLOC_USAGE_WITHIN_4G);
+
+    status_t status = GraphicBufferAllocator::get().allocate(
+            C2_ALIGN(mSize->width, 16), C2_ALIGN(mSize->height, 16),
+            0x15 /* NV12 */, 1u /* layer count */,
+            usage, &bufferHandle, &stride, "C2RKMpiEnc");
+    if (status) {
+        c2_err("failed transaction: allocate");
         goto __FAILED;
     }
+
+    Rockchip_get_gralloc_private((uint32_t *)bufferHandle, &privHandle);
+
+    mVpumem = (RKMemLinear *)malloc(sizeof(RKMemLinear));
+    mVpumem->phyAddr = privHandle.share_fd;
+    mVpumem->size = privHandle.size;
+    mVpumem->windowBuf = (void *)bufferHandle;
+
+    c2_info("alloc temporary vpumem fd %d size %d", mVpumem->phyAddr, mVpumem->size);
 
     //create mpp and init mpp
     err = mpp_create(&mMppCtx, &mMppMpi);
@@ -990,7 +1017,7 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
     }
 
     if (mVpumem) {
-        VPUFreeLinear(mVpumem);
+        GraphicBufferAllocator::get().free((buffer_handle_t)mVpumem->windowBuf);
         free(mVpumem);
         mVpumem = nullptr;
     }
@@ -1288,7 +1315,7 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
                     rga_rgb2nv12(vplanes, mVpumem, width, height, hor_stride, ver_stride, mRgaCtx);
                     C2_SAFE_FREE(vplanes);
                     inputCommit.size = hor_stride * ver_stride * 3/2;
-                    inputCommit.fd = mVpumem->phy_addr;
+                    inputCommit.fd = mVpumem->phyAddr;
                     break;
                 }
                 case C2PlanarLayout::TYPE_YUV:
@@ -1304,7 +1331,7 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
                     }
                     if (Format == HAL_PIXEL_FORMAT_YCbCr_420_888 || Format == HAL_PIXEL_FORMAT_YCrCb_NV12) {
                         rga_nv12_copy(vplanes, mVpumem, hor_stride, ver_stride, mRgaCtx);
-                        inputCommit.fd = mVpumem->phy_addr;
+                        inputCommit.fd = mVpumem->phyAddr;
                         inputCommit.size = hor_stride * ver_stride * 3 / 2;
                     } else {
                         //TODO: if(input->width() != width) do more(rga_nv12_copy)?

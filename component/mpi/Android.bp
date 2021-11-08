@@ -25,6 +25,7 @@ cc_library_static {
 
     include_dirs: [
         "vendor/rockchip/hardware/interfaces/codec2/component/include",
+        "hardware/rockchip/librkvpu/omx_get_gralloc_private",
         "hardware/rockchip/librga/include",
     ],
 

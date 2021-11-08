@@ -56,7 +56,7 @@ int32_t rga_dev_close(void *rga_ctx)
     return 0;
 }
 
-void rga_rgb2nv12(RKVideoPlane *plane, VPUMemLinear_t *vpumem,
+void rga_rgb2nv12(RKVideoPlane *plane, RKMemLinear *vpumem,
                   uint32_t Width, uint32_t Height, uint32_t dstWidth, uint32_t dstHeight,  void* rga_ctx)
 {
     FunctionIn();
@@ -70,7 +70,7 @@ void rga_rgb2nv12(RKVideoPlane *plane, VPUMemLinear_t *vpumem,
     rga_set_rect(&src.rect, 0, 0, Width, Height, plane->stride, Height, HAL_PIXEL_FORMAT_RGBA_8888);
     rga_set_rect(&dst.rect, 0, 0, Width, Height, dstWidth, dstHeight, HAL_PIXEL_FORMAT_YCrCb_NV12);
     src.fd = plane->fd;
-    dst.fd = vpumem->phy_addr;
+    dst.fd = vpumem->phyAddr;
     c2_trace("RgaBlit in src.fd = 0x%x, dst.fd = 0x%x", src.fd, dst.fd);
     if (RgaBlit(&src, &dst, NULL)) {
         c2_err("RgaBlit fail");
@@ -79,7 +79,7 @@ void rga_rgb2nv12(RKVideoPlane *plane, VPUMemLinear_t *vpumem,
     FunctionOut();
 }
 
-void rga_nv12_copy(RKVideoPlane *plane, VPUMemLinear_t *vpumem,
+void rga_nv12_copy(RKVideoPlane *plane, RKMemLinear *vpumem,
             uint32_t Width, uint32_t Height, void* rga_ctx) {
     FunctionIn();
 
@@ -91,7 +91,7 @@ void rga_nv12_copy(RKVideoPlane *plane, VPUMemLinear_t *vpumem,
     rga_set_rect(&src.rect, 0, 0, Width, Height, plane->stride, Height, HAL_PIXEL_FORMAT_YCrCb_NV12);
     rga_set_rect(&dst.rect, 0, 0, Width, Height, Width, Height, HAL_PIXEL_FORMAT_YCrCb_NV12);
     src.fd = plane->fd;
-    dst.fd = vpumem->phy_addr;
+    dst.fd = vpumem->phyAddr;
     if (RgaBlit(&src, &dst, NULL)) {
         c2_err("RgaBlit fail");
     }

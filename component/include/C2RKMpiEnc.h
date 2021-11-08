@@ -76,7 +76,7 @@ private:
     bool    mSignalledError;
     bool    mStarted;
     void    *mRgaCtx;
-    VPUMemLinear_t *mVpumem;
+    RKMemLinear *mVpumem;
     int32_t mEncProfile;
     int32_t mEncLevel;
     int32_t mIDRInterval;
