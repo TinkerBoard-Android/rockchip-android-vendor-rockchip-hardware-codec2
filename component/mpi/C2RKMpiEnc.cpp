@@ -833,6 +833,8 @@ c2_status_t C2RKMpiEnc::initEncParams() {
         mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_max_i", 51);
         mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_step", 4);
         mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_delta_ip", 3);
+        /* disable mb_rc for vepu, this cfg does not apply to rkvenc */
+        mpp_enc_cfg_set_s32(enc_cfg, "hw:mb_rc_disable", 1);
     } break;
     case MPP_VIDEO_CodingMJPEG : {
         mpp_enc_cfg_set_s32(enc_cfg, "jpeg:quant", 10);
