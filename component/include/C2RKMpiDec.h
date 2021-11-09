@@ -49,6 +49,7 @@ constexpr uint32_t kMaxReferenceCount = 16;
 constexpr uint32_t k4KMaxReferenceCount = 8;
 constexpr uint32_t kMaxBlockCount = 24;
 constexpr uint32_t kMaxRetryNum = 50;
+constexpr size_t kMinInputBufferSize = 2 * 1024 * 1024;
 
 class C2RKMpiDec : public C2RKComponent {
 public:
@@ -190,7 +191,8 @@ public:
                                   const C2P<C2StreamMaxPictureSizeTuning::output> &maxSize) {
         (void)mayBlock;
         // assume compression ratio of 2
-        me.set().value = (((maxSize.v.width + 15) / 16) * ((maxSize.v.height + 15) / 16) * 192);
+        me.set().value = c2_max((((maxSize.v.width + 63) / 64)
+                * ((maxSize.v.height + 63) / 64) * 3072), kMinInputBufferSize);
         return C2R::Ok();
     }
 

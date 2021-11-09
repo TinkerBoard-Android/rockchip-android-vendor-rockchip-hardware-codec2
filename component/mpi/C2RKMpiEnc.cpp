@@ -121,7 +121,7 @@ public:
 
         addParameter(
                 DefineParam(mSize, C2_PARAMKEY_PICTURE_SIZE)
-                .withDefault(new C2StreamPictureSizeInfo::input(0u, 1280, 720))
+                .withDefault(new C2StreamPictureSizeInfo::input(0u, 176, 144))
                 .withFields({
                     C2F(mSize, width).inRange(2, 1920, 2),
                     C2F(mSize, height).inRange(2, 1920, 2),
@@ -147,7 +147,7 @@ public:
 
         addParameter(
                 DefineParam(mFrameRate, C2_PARAMKEY_FRAME_RATE)
-                .withDefault(new C2StreamFrameRateInfo::output(0u, 30.))
+                .withDefault(new C2StreamFrameRateInfo::output(0u, 1.))
                 // TODO: More restriction?
                 .withFields({C2F(mFrameRate, value).greaterThan(0.)})
                 .withSetter(Setter<decltype(*mFrameRate)>::StrictValueWithNoDeps)
@@ -527,7 +527,7 @@ public:
         constexpr Level levels[] = {
             //avc level
             { LEVEL_AVC_1,          10 },
-            { LEVEL_AVC_1B,         99 },
+            { LEVEL_AVC_1B,          9 },
             { LEVEL_AVC_1_1,        11 },
             { LEVEL_AVC_1_2,        12 },
             { LEVEL_AVC_1_3,        13 },

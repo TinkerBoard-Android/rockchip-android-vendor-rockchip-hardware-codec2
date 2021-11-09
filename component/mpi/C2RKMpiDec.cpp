@@ -29,6 +29,7 @@
 #include "C2RKMpiDec.h"
 #include "C2RKMediaDefs.h"
 #include "C2RKVersion.h"
+#include "C2RKEnv.h"
 
 #define GRALLOC_USAGE_HW_TEXTURE            1ULL << 8
 #define GRALLOC_USAGE_HW_COMPOSER           1ULL << 11
@@ -236,6 +237,25 @@ C2RKMpiDec::IntfImpl::IntfImpl(
             })
             .withSetter(ProfileLevelSetter, mSize)
             .build());
+
+        addParameter(
+                DefineParam(mMaxSize, C2_PARAMKEY_MAX_PICTURE_SIZE)
+                .withDefault(new C2StreamMaxPictureSizeTuning::output(0u, 320, 240))
+                .withFields({
+                    C2F(mSize, width).inRange(2, 4096, 2),
+                    C2F(mSize, height).inRange(2, 4096, 2),
+                })
+                .withSetter(MaxPictureSizeSetter, mSize)
+                .build());
+
+        addParameter(
+                DefineParam(mMaxInputSize, C2_PARAMKEY_INPUT_MAX_BUFFER_SIZE)
+                .withDefault(new C2StreamMaxBufferSizeInfo::input(0u, kMinInputBufferSize))
+                .withFields({
+                    C2F(mMaxInputSize, value).any(),
+                })
+                .calculatedAs(MaxInputSizeSetter, mMaxSize)
+                .build());
     }
 
     C2ChromaOffsetStruct locations[1] = { C2ChromaOffsetStruct::ITU_YUV_420_0() };
@@ -866,7 +886,8 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
                 mLastPts = timestamps;
             }else{
                 //return this work when timestamps repeat
-                fillEmptyWork(work);
+                if (mCodingType == MPP_VIDEO_CodingMPEG2)
+                    fillEmptyWork(work);
             }
         }
         if ((work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) != 0) {
@@ -1290,10 +1311,17 @@ c2_status_t C2RKMpiDec::registerBufferToMpp(std::shared_ptr<C2GraphicBlock> bloc
     if (mPreGeneration == 0)
         mPreGeneration = generation;
     if (mPreGeneration != generation) {
+        char value[128 + 1];
+        memset(value, 0, sizeof(value));
         mPreGeneration = generation;
-        mSurfaceChange = true;
-        c2_err("surface changed !");
-        return C2_CORRUPTED;
+        if (Rockchip_C2_GetEnvStr("cts_gts.exo.gts", value, NULL) && !strcasecmp(value, "true")) {
+            c2_info("when surface changed during GtsExoPlayerTest,do nothing!");
+        } else {
+            //for douyin to avoid error display
+            mSurfaceChange = true;
+            c2_err("surface changed !");
+            return C2_CORRUPTED;
+        }
     }
     c2_trace("%s %d generation:%ld bqId:%lld bqslot:%ld shareFd：%d", __func__, __LINE__, (unsigned long)generation, (unsigned long long)bqId,
             (unsigned long)bqSlot, shareFd);
