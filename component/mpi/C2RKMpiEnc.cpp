@@ -34,6 +34,7 @@
 #include <C2AllocatorGralloc.h>
 #include <ui/GraphicBufferMapper.h>
 
+#include "hardware/hardware_rockchip.h"
 #include "C2RKMpiEnc.h"
 #include <C2RKMediaDefs.h>
 #include "C2RKRgaProcess.h"
@@ -1301,7 +1302,7 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
                         fwrite(input->data()[0], 1, mSize->width * mSize->height * 3 / 2, mFp_enc_in);
                         fflush(mFp_enc_in);
                     }
-                    if (Format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
+                    if (Format == HAL_PIXEL_FORMAT_YCbCr_420_888 || Format == HAL_PIXEL_FORMAT_YCrCb_NV12) {
                         rga_nv12_copy(vplanes, mVpumem, hor_stride, ver_stride, mRgaCtx);
                         inputCommit.fd = mVpumem->phy_addr;
                         inputCommit.size = hor_stride * ver_stride * 3 / 2;

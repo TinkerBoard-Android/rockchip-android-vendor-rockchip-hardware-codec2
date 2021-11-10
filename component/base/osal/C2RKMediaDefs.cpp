@@ -148,7 +148,7 @@ uint32_t colorFormatMpiToAndroid(const uint32_t format) {
             androidFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP_10;
         } break;
         default: {
-            c2_err("unsupport rockit color format: %d", format);
+            c2_err("unsupport color format: %d", format);
         }
     }
 
