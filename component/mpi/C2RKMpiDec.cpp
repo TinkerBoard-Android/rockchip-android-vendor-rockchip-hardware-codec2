@@ -425,7 +425,7 @@ c2_status_t C2RKMpiDec::onInit() {
     // init frame grp
     err = mpp_buffer_group_get_external(&frmGrp, MPP_BUFFER_TYPE_ION);
     if (err != MPP_OK) {
-        c2_err("%s unsupport rockit codec id: 0x%x", __FUNCTION__, MPP_VIDEO_CodingAVC);
+        c2_err("%s mpp_buffer_group_get_external fail !", __FUNCTION__);
         goto __FAILED;
     }
 

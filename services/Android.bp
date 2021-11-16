@@ -46,6 +46,8 @@ cc_binary {
     shared_libs: [
         "libavservices_minijail_vendor",
         "libbinder",
+        "libcutils", // for properties
+        "libdmabufheap",
     ],
 
     header_libs: [
