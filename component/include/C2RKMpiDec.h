@@ -47,7 +47,7 @@ constexpr uint32_t kDefaultOutputDelay = 16;
 constexpr uint32_t kMaxOutputDelay = 16;
 constexpr uint32_t kMaxReferenceCount = 16;
 constexpr uint32_t k4KMaxReferenceCount = 8;
-constexpr uint32_t kMaxBlockCount = 24;
+constexpr uint32_t kMaxBlockCount = 32;
 constexpr uint32_t kMaxRetryNum = 50;
 constexpr size_t kMinInputBufferSize = 2 * 1024 * 1024;
 
