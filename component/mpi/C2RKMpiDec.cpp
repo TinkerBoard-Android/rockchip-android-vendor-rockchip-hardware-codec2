@@ -67,8 +67,8 @@ C2RKMpiDec::IntfImpl::IntfImpl(
             DefineParam(mSize, C2_PARAMKEY_PICTURE_SIZE)
             .withDefault(new C2StreamPictureSizeInfo::output(0u, 320, 240))
             .withFields({
-                C2F(mSize, width).inRange(2, 4096, 2),
-                C2F(mSize, height).inRange(2, 4096, 2),
+                C2F(mSize, width).inRange(2, 7680, 2),
+                C2F(mSize, height).inRange(2, 7680, 2),
             })
             .withSetter(SizeSetter)
             .build());
@@ -77,8 +77,8 @@ C2RKMpiDec::IntfImpl::IntfImpl(
             DefineParam(mBlockSize, C2_PARAMKEY_BLOCK_SIZE)
             .withDefault(new C2StreamBlockSizeInfo::output(0u, 320, 240))
             .withFields({
-                C2F(mBlockSize, width).inRange(2, 8192, 2),
-                C2F(mBlockSize, height).inRange(2, 4096, 2),
+                C2F(mBlockSize, width).inRange(2, 7680, 2),
+                C2F(mBlockSize, height).inRange(2, 7680, 2),
             })
             .withSetter(BlockSizeSetter)
             .build());
