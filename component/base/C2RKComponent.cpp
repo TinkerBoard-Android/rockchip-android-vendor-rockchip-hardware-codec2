@@ -576,8 +576,10 @@ bool C2RKComponent::processQueue() {
         work->input.buffers.clear();
     }
     if (work->input.flags & C2FrameData::FLAG_DROP_FRAME) {
-        c2_info("Discard frames from previous generation");
-        work->input.buffers.clear();
+        if (work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) {
+            c2_info("Discard extra pkt from previous generation");
+            work->input.buffers.clear();
+        }
     }
     process(work, mOutputBlockPool);
     c2_trace("processed frame #%" PRIu64, work->input.ordinal.frameIndex.peeku());

@@ -818,7 +818,7 @@ c2_status_t C2RKMpiEnc::initEncParams() {
         //     mBframes = maxBframes;
         // }
     }
-    gop = (mIDRInterval  < 8640000) ? mIDRInterval : mFrameRate->value;
+    gop = (mIDRInterval  < 8640000 &&  mIDRInterval > 1) ? mIDRInterval : gop;
     mpp_enc_cfg_set_s32(enc_cfg, "rc:gop", gop);
     c2_info("(%s): bps %d fps %f gop %d\n",
             intf()->getName().c_str(), mBitrate->value, mFrameRate->value, gop);
@@ -910,6 +910,7 @@ c2_status_t C2RKMpiEnc::initEncoder() {
         mColorAspects = mIntf->getCodedColorAspects_l();
     }
 
+    mFrameRate->value  = (mFrameRate->value == 1) ? 30 : mFrameRate->value;
     c2_info("%s %d in frame rate = %f", __FUNCTION__, __LINE__, mFrameRate->value);
     c2_info("%s %d in bit rate = %d iInterval = %d", __FUNCTION__, __LINE__, mBitrate->value, mIDRInterval);
     c2_info("%s %d in width=%d, height=%d", __FUNCTION__, __LINE__, mSize->width, mSize->height);
