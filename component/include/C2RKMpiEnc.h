@@ -83,6 +83,9 @@ private:
     int32_t mEos;
     MppCtx mMppCtx;
     MppApi *mMppMpi;
+    MppEncCfg mEncCfg;
+    int32_t mHorStride;
+    int32_t mVerStride;
     FILE *mFp_enc_out;
     FILE *mFp_enc_in;
     struct timeval mTimeStart;

@@ -53,8 +53,6 @@ namespace android {
 
 namespace {
 
-MppEncCfg enc_cfg = nullptr;
-
 void ParseGop(
         const C2StreamGopTuning::output &gop,
         uint32_t *syncInterval, uint32_t *iInterval, uint32_t *maxBframes) {
@@ -629,6 +627,9 @@ C2RKMpiEnc::C2RKMpiEnc(
       mEos(0),
       mMppCtx(nullptr),
       mMppMpi(nullptr),
+      mEncCfg(NULL),
+      mHorStride(0),
+      mVerStride(0),
       mFp_enc_out(nullptr),
       mFp_enc_in(nullptr),
       mCodingType(MPP_VIDEO_CodingUnused){
@@ -739,10 +740,12 @@ c2_status_t C2RKMpiEnc::setVuiParams() {
             &matrixCoeffs,
             &range);
 
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:range", range ? 2 : 0);
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:colorprim", primaries);
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:colortrc", transfer);
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:colorspace", matrixCoeffs);
+    if (mEncCfg != NULL) {
+        mpp_enc_cfg_set_s32(mEncCfg, "prep:range", range ? 2 : 0);
+        mpp_enc_cfg_set_s32(mEncCfg, "prep:colorprim", primaries);
+        mpp_enc_cfg_set_s32(mEncCfg, "prep:colortrc", transfer);
+        mpp_enc_cfg_set_s32(mEncCfg, "prep:colorspace", matrixCoeffs);
+    }
 
     return C2_OK;
 }
@@ -754,51 +757,55 @@ c2_status_t C2RKMpiEnc::initEncParams() {
     int32_t gop = 30;
     MppEncSeiMode seiMode = MPP_ENC_SEI_MODE_ONE_FRAME;
 
-    err = mpp_enc_cfg_init(&enc_cfg);
+    err = mpp_enc_cfg_init(&mEncCfg);
     if (err) {
         ret = C2_CORRUPTED;
         c2_err("mpp_enc_cfg_init failed ret %d\n", err);
         goto __RETURN;
     }
 
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:width", mSize->width);
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:height", mSize->height);
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:hor_stride", C2_ALIGN(mSize->width, 16));
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:ver_stride", C2_ALIGN(mSize->height, 8));
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:format", MPP_FMT_YUV420SP);
-    mpp_enc_cfg_set_s32(enc_cfg, "prep:rotation", MPP_ENC_ROT_0);
+    /* default stride of encoder config */
+    mHorStride = C2_ALIGN(mSize->width, 16);
+    mVerStride = C2_ALIGN(mSize->height, 8);
+
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:width", mSize->width);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:height", mSize->height);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:hor_stride", mHorStride);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:ver_stride", mVerStride);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:format", MPP_FMT_YUV420SP);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:rotation", MPP_ENC_ROT_0);
 
     /* setup bitrate for different rc_mode */
-    mpp_enc_cfg_set_s32(enc_cfg, "rc:bps_target", mBitrate->value);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_target", mBitrate->value);
     switch (mBitrateMode->value) {
         case C2Config::BITRATE_CONST:
             /* CBR mode has narrow bound */
-            mpp_enc_cfg_set_s32(enc_cfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
-            mpp_enc_cfg_set_s32(enc_cfg, "rc:bps_max", mBitrate->value * 17 / 16);
-            mpp_enc_cfg_set_s32(enc_cfg, "rc:bps_min", mBitrate->value * 15 / 16);
+            mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
+            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", mBitrate->value * 17 / 16);
+            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", mBitrate->value * 15 / 16);
             break;
         case C2Config::BITRATE_IGNORE:[[fallthrough]];
         case C2Config::BITRATE_VARIABLE:
             /* VBR mode has wide bound */
-            mpp_enc_cfg_set_s32(enc_cfg, "rc:mode", MPP_ENC_RC_MODE_VBR);
-            mpp_enc_cfg_set_s32(enc_cfg, "rc:bps_max", mBitrate->value * 17 / 16);
-            mpp_enc_cfg_set_s32(enc_cfg, "rc:bps_min", mBitrate->value * 1 / 16);
+            mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_VBR);
+            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", mBitrate->value * 17 / 16);
+            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", mBitrate->value * 1 / 16);
             break;
         default:
             /* default use CBR mode */
-            mpp_enc_cfg_set_s32(enc_cfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
-            mpp_enc_cfg_set_s32(enc_cfg, "rc:bps_max", mBitrate->value * 17 / 16);
-            mpp_enc_cfg_set_s32(enc_cfg, "rc:bps_min", mBitrate->value * 15 / 16);
+            mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
+            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", mBitrate->value * 17 / 16);
+            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", mBitrate->value * 15 / 16);
             break;
     }
 
     /* fix input / output frame rate */
-    mpp_enc_cfg_set_s32(enc_cfg, "rc:fps_in_flex", 0);
-    mpp_enc_cfg_set_s32(enc_cfg, "rc:fps_in_num", mFrameRate->value);
-    mpp_enc_cfg_set_s32(enc_cfg, "rc:fps_in_denorm", 1);
-    mpp_enc_cfg_set_s32(enc_cfg, "rc:fps_out_flex", 0);
-    mpp_enc_cfg_set_s32(enc_cfg, "rc:fps_out_num", mFrameRate->value);
-    mpp_enc_cfg_set_s32(enc_cfg, "rc:fps_out_denorm", 1);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_in_flex", 0);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_in_num", mFrameRate->value);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_in_denorm", 1);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_out_flex", 0);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_out_num", mFrameRate->value);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_out_denorm", 1);
 
     if (mGop && mGop->flexCount() > 0) {
         uint32_t syncInterval = 30;
@@ -819,48 +826,48 @@ c2_status_t C2RKMpiEnc::initEncParams() {
         // }
     }
     gop = (mIDRInterval  < 8640000 &&  mIDRInterval > 1) ? mIDRInterval : gop;
-    mpp_enc_cfg_set_s32(enc_cfg, "rc:gop", gop);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:gop", gop);
     c2_info("(%s): bps %d fps %f gop %d\n",
             intf()->getName().c_str(), mBitrate->value, mFrameRate->value, gop);
 
-    mpp_enc_cfg_set_s32(enc_cfg, "codec:type", mCodingType);
+    mpp_enc_cfg_set_s32(mEncCfg, "codec:type", mCodingType);
     switch (mCodingType) {
     case MPP_VIDEO_CodingAVC : {
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:profile", mEncProfile);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:level", mEncLevel);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:cabac_en", 1);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:cabac_idc", 0);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:trans8x8", 1);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_init", 26);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_min", 10);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_max", 49);//49 for testEncoderQualityAVCCBR
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_min_i", 10);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_max_i", 51);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_step", 4);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_delta_ip", 3);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:profile", mEncProfile);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:level", mEncLevel);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_en", 1);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_idc", 0);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:trans8x8", 1);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_init", 26);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_min", 10);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_max", 49);//49 for testEncoderQualityAVCCBR
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_min_i", 10);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_max_i", 51);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_step", 4);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_delta_ip", 3);
         /* disable mb_rc for vepu, this cfg does not apply to rkvenc */
-        mpp_enc_cfg_set_s32(enc_cfg, "hw:mb_rc_disable", 1);
+        mpp_enc_cfg_set_s32(mEncCfg, "hw:mb_rc_disable", 1);
     } break;
     case MPP_VIDEO_CodingMJPEG : {
-        mpp_enc_cfg_set_s32(enc_cfg, "jpeg:quant", 10);
-        mpp_enc_cfg_set_s32(enc_cfg, "jpeg:change", MPP_ENC_JPEG_CFG_CHANGE_QP);
+        mpp_enc_cfg_set_s32(mEncCfg, "jpeg:quant", 10);
+        mpp_enc_cfg_set_s32(mEncCfg, "jpeg:change", MPP_ENC_JPEG_CFG_CHANGE_QP);
     } break;
     case MPP_VIDEO_CodingVP8 : {
-        mpp_enc_cfg_set_s32(enc_cfg, "vp8:qp_init", -1);
-        mpp_enc_cfg_set_s32(enc_cfg, "vp8:qp_min", 0);
-        mpp_enc_cfg_set_s32(enc_cfg, "vp8:qp_max", 127);
-        mpp_enc_cfg_set_s32(enc_cfg, "vp8:qp_min_i", 0);
-        mpp_enc_cfg_set_s32(enc_cfg, "vp8:qp_max_i", 127);
+        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_init", -1);
+        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_min", 0);
+        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_max", 127);
+        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_min_i", 0);
+        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_max_i", 127);
     } break;
     case MPP_VIDEO_CodingHEVC : {
-        mpp_enc_cfg_set_s32(enc_cfg, "h265:profile", mEncProfile);
-        mpp_enc_cfg_set_s32(enc_cfg, "h265:level", mEncLevel);
-        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_init", 26);
-        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_min", 10);
-        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_max", 49);
-        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_min_i", 15);
-        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_max_i", 51);
-        mpp_enc_cfg_set_s32(enc_cfg, "h265:qp_delta_ip", 4);
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:profile", mEncProfile);
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:level", mEncLevel);
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_init", 26);
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_min", 10);
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_max", 49);
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_min_i", 15);
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_max_i", 51);
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_delta_ip", 4);
     } break;
     default : {
         c2_err("support encoder coding type %d\n", mCodingType);
@@ -870,7 +877,7 @@ c2_status_t C2RKMpiEnc::initEncParams() {
     /* Video control Set VUI params */
     setVuiParams();
 
-    err = mMppMpi->control(mMppCtx, MPP_ENC_SET_CFG, enc_cfg);
+    err = mMppMpi->control(mMppCtx, MPP_ENC_SET_CFG, mEncCfg);
     if (err) {
         c2_err("mpi control enc set codec cfg failed ret %d\n", err);
         ret = C2_CORRUPTED;
@@ -997,9 +1004,9 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
     mStarted = false;
     mEos = 0;
 
-    if(enc_cfg){
-        mpp_enc_cfg_deinit(enc_cfg);
-        enc_cfg = nullptr;
+    if (mEncCfg) {
+        mpp_enc_cfg_deinit(mEncCfg);
+        mEncCfg = nullptr;
     }
 
     if (mMppCtx){
@@ -1201,26 +1208,15 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
 
     uint32_t width = mSize->width;
     uint32_t height = mSize->height;
-    uint32_t hor_stride = C2_ALIGN(width, 16);
-    uint32_t ver_stride = C2_ALIGN(height, 8);
+    uint32_t hor_stride = mHorStride;
+    uint32_t ver_stride = mVerStride;
     uint64_t workIndex = work->input.ordinal.frameIndex.peekull();
 
     err = mpp_frame_init(&frame);
     if (err) {
         c2_err("mpp_frame_init failed\n");
-        ret = C2_CORRUPTED;
-        if (frame) {
-            mpp_frame_deinit(&frame);
-        }
-        return ret;
+        return C2_CORRUPTED;
     }
-
-    mpp_frame_set_width(frame, width);
-    mpp_frame_set_height(frame, height);
-    mpp_frame_set_hor_stride(frame, C2_ALIGN(width, 16));
-    mpp_frame_set_ver_stride(frame, C2_ALIGN(height, 8));
-    mpp_frame_set_pts(frame, workIndex);
-    mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
 
     if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
         mpp_frame_set_eos(frame, 1);
@@ -1333,26 +1329,24 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
                         fwrite(input->data()[0], 1, mSize->width * mSize->height * 3 / 2, mFp_enc_in);
                         fflush(mFp_enc_in);
                     }
-                    if (Format == HAL_PIXEL_FORMAT_YCbCr_420_888 || Format == HAL_PIXEL_FORMAT_YCrCb_NV12) {
-                        RgaParam srcParam, dstParam;
 
-                        C2RKRgaDef::paramInit(&srcParam, vplanes->fd,
-                                              width, height, vplanes->stride, height);
-                        C2RKRgaDef::paramInit(&dstParam, mVpumem->phyAddr,
-                                              width, height, hor_stride, ver_stride);
+                    if (mHorStride != Stride) {
+                        // setup encoder using new stride config
+                        mpp_enc_cfg_set_s32(mEncCfg, "prep:hor_stride", Stride);
 
-                        if (!C2RKRgaDef::nv12Copy(srcParam, dstParam)) {
-                            c2_err("failed to convert input nv12Copy");
-                            // return C2_BAD_VALUE;
+                        err = mMppMpi->control(mMppCtx, MPP_ENC_SET_CFG, mEncCfg);
+                        if (!err) {
+                            c2_info("cfg hor_stride change from %d -> %d", mHorStride, Stride);
+                            hor_stride = Stride;
+                            mHorStride = Stride;
+                        } else {
+                            c2_err("failed to setup new mpp config.");
                         }
-
-                        inputCommit.fd = mVpumem->phyAddr;
-                        inputCommit.size = hor_stride * ver_stride * 3 / 2;
-                    } else {
-                        //TODO: if(input->width() != width) do more(rga_nv12_copy)?
-                        inputCommit.size = width * height * 3/2;
-                        inputCommit.fd = c2Handle->data[0];
                     }
+
+                    inputCommit.size = hor_stride * ver_stride * 3/2;
+                    inputCommit.fd = c2Handle->data[0];
+
                     C2_SAFE_FREE(vplanes);
                     break;
                 case C2PlanarLayout::TYPE_YUVA:
@@ -1378,6 +1372,14 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
     } else {
         mpp_frame_set_buffer(frame, NULL);
     }
+
+    mpp_frame_set_width(frame, width);
+    mpp_frame_set_height(frame, height);
+    mpp_frame_set_hor_stride(frame, hor_stride);
+    mpp_frame_set_ver_stride(frame, ver_stride);
+    mpp_frame_set_pts(frame, workIndex);
+    mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
+
     err = mMppMpi->encode_put_frame(mMppCtx, frame);
     if (err) {
         c2_err("encode_put_frame ret %d\n", ret);
