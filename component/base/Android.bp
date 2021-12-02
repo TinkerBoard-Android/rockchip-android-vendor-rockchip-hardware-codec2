@@ -55,7 +55,7 @@ cc_library_static {
         "C2RKComponent.cpp",
         "C2RKInterface.cpp",
         "osal/C2RKMediaDefs.cpp",
-        "osal/C2RKRgaProcess.cpp",
+        "osal/C2RKRgaDef.cpp",
         "osal/C2RKLog.cpp",
         "osal/C2RKEnv.cpp",
     ],

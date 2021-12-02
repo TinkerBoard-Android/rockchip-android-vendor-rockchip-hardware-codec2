@@ -39,7 +39,7 @@
 #include "hardware/hardware_rockchip.h"
 #include "C2RKMpiEnc.h"
 #include <C2RKMediaDefs.h>
-#include "C2RKRgaProcess.h"
+#include "C2RKRgaDef.h"
 #include "mpp/h264_syntax.h"
 #include "mpp/h265_syntax.h"
 #include "C2RKLog.h"
@@ -917,11 +917,6 @@ c2_status_t C2RKMpiEnc::initEncoder() {
     c2_info("%s %d in bitrate mode = %d", __FUNCTION__, __LINE__, (int)mBitrateMode->value);
     c2_info("%s %d in profile = %d level = %d", __FUNCTION__, __LINE__, mEncProfile, mEncLevel);
 
-    //open rga
-    if (rga_dev_open(&mRgaCtx)  < 0) {
-        c2_err("open rga device fail!");
-    }
-
     /*
      * create vpumem for mpp input
      *
@@ -1010,11 +1005,6 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
     if (mMppCtx){
         mpp_destroy(mMppCtx);
         mMppCtx = nullptr;
-    }
-
-    if (mRgaCtx) {
-        rga_dev_close(mRgaCtx);
-        mRgaCtx = nullptr;
     }
 
     if (mVpumem) {
@@ -1308,19 +1298,32 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
                 case C2PlanarLayout::TYPE_RGB:
                     [[fallthrough]];
                 case C2PlanarLayout::TYPE_RGBA: {
+                    RgaParam srcParam, dstParam;
                     c2_trace("%s %d input rgb", __func__,__LINE__);
+
                     if (mFp_enc_in != nullptr) {
                         fwrite(input->data()[0], 1, mSize->width * mSize->height * 4, mFp_enc_in);
                         fflush(mFp_enc_in);
                     }
-                    rga_rgb2nv12(vplanes, mVpumem, width, height, hor_stride, ver_stride, mRgaCtx);
+
+                    C2RKRgaDef::paramInit(&srcParam, vplanes->fd,
+                                          width, height, vplanes->stride, height);
+                    C2RKRgaDef::paramInit(&dstParam, mVpumem->phyAddr,
+                                          width, height, hor_stride, ver_stride);
+
+                    if (!C2RKRgaDef::rgbToNv12(srcParam, dstParam)) {
+                        c2_err("failed to convert input from rgba to nv12");
+                        // return C2_BAD_VALUE;
+                    }
+
                     C2_SAFE_FREE(vplanes);
-                    inputCommit.size = hor_stride * ver_stride * 3/2;
+                    inputCommit.size = hor_stride * ver_stride * 3 / 2;
                     inputCommit.fd = mVpumem->phyAddr;
                     break;
                 }
                 case C2PlanarLayout::TYPE_YUV:
                     c2_trace("%s %d input yuv", __func__,__LINE__);
+
                     if (!IsYUV420(*input)) {
                         c2_err("input is not YUV420");
                         C2_SAFE_FREE(vplanes);
@@ -1331,7 +1334,18 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
                         fflush(mFp_enc_in);
                     }
                     if (Format == HAL_PIXEL_FORMAT_YCbCr_420_888 || Format == HAL_PIXEL_FORMAT_YCrCb_NV12) {
-                        rga_nv12_copy(vplanes, mVpumem, hor_stride, ver_stride, mRgaCtx);
+                        RgaParam srcParam, dstParam;
+
+                        C2RKRgaDef::paramInit(&srcParam, vplanes->fd,
+                                              width, height, vplanes->stride, height);
+                        C2RKRgaDef::paramInit(&dstParam, mVpumem->phyAddr,
+                                              width, height, hor_stride, ver_stride);
+
+                        if (!C2RKRgaDef::nv12Copy(srcParam, dstParam)) {
+                            c2_err("failed to convert input nv12Copy");
+                            // return C2_BAD_VALUE;
+                        }
+
                         inputCommit.fd = mVpumem->phyAddr;
                         inputCommit.size = hor_stride * ver_stride * 3 / 2;
                     } else {

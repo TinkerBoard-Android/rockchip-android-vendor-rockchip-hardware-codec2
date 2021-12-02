@@ -75,7 +75,6 @@ private:
     bool    mSignalledEos;
     bool    mSignalledError;
     bool    mStarted;
-    void    *mRgaCtx;
     RKMemLinear *mVpumem;
     int32_t mEncProfile;
     int32_t mEncLevel;

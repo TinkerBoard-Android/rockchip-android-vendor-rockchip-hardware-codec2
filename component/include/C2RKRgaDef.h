@@ -14,18 +14,27 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_C2_RK_RGA_PROCESS_H__
-#define ANDROID_C2_RK_RGA_PROCESS_H__
+#ifndef ANDROID_C2_RK_RGA_DEF_H__
+#define ANDROID_C2_RK_RGA_DEF_H__
 
-#include <log/log.h>
-#include <string.h>
-#include "C2RKMediaDefs.h"
+#include <stdio.h>
 
-int32_t rga_dev_open(void **rga_ctx);
-int32_t rga_dev_close(void *rga_ctx);
-void rga_rgb2nv12(RKVideoPlane *plane, RKMemLinear *vpumem,
-            uint32_t Width, uint32_t Height, uint32_t dstWidth, uint32_t dstHeight, void *rga_ctx);
-void rga_nv12_copy(RKVideoPlane *plane, RKMemLinear *vpumem,
-            uint32_t Width, uint32_t Height, void* rga_ctx);
-#endif  // ANDROID_C2_RK_RGA_PROCESS_H__
+typedef struct {
+    int32_t fd;
+    int32_t width;
+    int32_t height;
+    int32_t wstride;
+    int32_t hstride;
+} RgaParam;
 
+class C2RKRgaDef {
+public:
+    static void paramInit(RgaParam *param, int32_t fd,
+                          int32_t width, int32_t height,
+                          int32_t wstride = 0, int32_t hstride = 0);
+
+    static bool rgbToNv12(RgaParam srcParam, RgaParam dstParam);
+    static bool nv12Copy(RgaParam srcParam, RgaParam dstParam);
+};
+
+#endif  // ANDROID_C2_RK_RGA_DEF_H__
