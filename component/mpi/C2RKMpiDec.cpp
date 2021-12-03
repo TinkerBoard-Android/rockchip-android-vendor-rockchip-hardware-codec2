@@ -18,16 +18,15 @@
 #define ROCKCHIP_LOG_TAG    "C2RKMpiDec"
 
 #include <media/stagefright/foundation/MediaDefs.h>
-
 #include <C2Debug.h>
 #include <C2PlatformSupport.h>
 #include <Codec2Mapper.h>
 #include <C2RKInterface.h>
 #include <C2AllocatorGralloc.h>
-
 #include "hardware/hardware_rockchip.h"
 #include "C2RKMpiDec.h"
 #include "C2RKMediaDefs.h"
+#include "C2RKRgaDef.h"
 #include "C2RKVersion.h"
 #include "C2RKEnv.h"
 
@@ -237,26 +236,26 @@ C2RKMpiDec::IntfImpl::IntfImpl(
             })
             .withSetter(ProfileLevelSetter, mSize)
             .build());
-
-        addParameter(
-                DefineParam(mMaxSize, C2_PARAMKEY_MAX_PICTURE_SIZE)
-                .withDefault(new C2StreamMaxPictureSizeTuning::output(0u, 320, 240))
-                .withFields({
-                    C2F(mSize, width).inRange(2, 4096, 2),
-                    C2F(mSize, height).inRange(2, 4096, 2),
-                })
-                .withSetter(MaxPictureSizeSetter, mSize)
-                .build());
-
-        addParameter(
-                DefineParam(mMaxInputSize, C2_PARAMKEY_INPUT_MAX_BUFFER_SIZE)
-                .withDefault(new C2StreamMaxBufferSizeInfo::input(0u, kMinInputBufferSize))
-                .withFields({
-                    C2F(mMaxInputSize, value).any(),
-                })
-                .calculatedAs(MaxInputSizeSetter, mMaxSize)
-                .build());
     }
+
+    addParameter(
+            DefineParam(mMaxSize, C2_PARAMKEY_MAX_PICTURE_SIZE)
+            .withDefault(new C2StreamMaxPictureSizeTuning::output(0u, 320, 240))
+            .withFields({
+                C2F(mSize, width).inRange(2, 4096, 2),
+                C2F(mSize, height).inRange(2, 4096, 2),
+            })
+            .withSetter(MaxPictureSizeSetter, mSize)
+            .build());
+
+    addParameter(
+            DefineParam(mMaxInputSize, C2_PARAMKEY_INPUT_MAX_BUFFER_SIZE)
+            .withDefault(new C2StreamMaxBufferSizeInfo::input(0u, kMinInputBufferSize))
+            .withFields({
+                C2F(mMaxInputSize, value).any(),
+            })
+            .calculatedAs(MaxInputSizeSetter, mMaxSize)
+            .build());
 
     C2ChromaOffsetStruct locations[1] = { C2ChromaOffsetStruct::ITU_YUV_420_0() };
     std::shared_ptr<C2StreamColorInfo::output> defaultColorInfo =
@@ -340,12 +339,9 @@ C2RKMpiDec::C2RKMpiDec(
     : C2RKComponent(std::make_shared<C2RKInterface<IntfImpl>>(name, id, intfImpl)),
       mIntf(intfImpl),
       mLastPts(-1),
-      mPreGeneration(0),
-      mSurfaceChange(false),
       mOutputEos(false),
       mFlushed(false),
-      mIsLocalBuffer(false),
-      mLocalBufferReady(false),
+      mAllocWithoutSurface(false),
       mWidth(320),
       mHeight(240),
       mOutIndex(0u),
@@ -353,57 +349,51 @@ C2RKMpiDec::C2RKMpiDec(
       mCtx(NULL),
       mCodingType(MPP_VIDEO_CodingUnused),
       mSignalledOutputEos(false) {
-    FunctionIn();
     c2_info("version:%s", C2_GIT_BUILD_VERSION);
     int err = getCodingTypeFromComponentName(name, &mCodingType);
     if (err) {
-        c2_err("get coding type from component name failed! now codingtype=%d", mCodingType);
+        c2_err("getCodingTypeFromComponentName failed! now codingtype=%d err=%d", mCodingType, err);
     }
-
-    FunctionOut();
 }
 
 C2RKMpiDec::~C2RKMpiDec() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     onRelease();
 }
 
 c2_status_t C2RKMpiDec::onInit() {
-    c2_info("%s in", __func__);
-
-    MPP_RET         err     = MPP_OK;
-    MppCtx          mppCtx  = NULL;
-    MppApi         *mppMpi  = NULL;
-    MppBufferGroup  frmGrp  = NULL;
-    c2_status_t     ret     = C2_OK;
+    c2_info_f("in");
+    MPP_RET             err = MPP_OK;
+    MppCtx           mppCtx = NULL;
+    MppApi          *mppMpi = NULL;
+    c2_status_t         ret = C2_OK;
 
     MpiCodecContext* ctx = (MpiCodecContext*)malloc(sizeof(MpiCodecContext));
     if (ctx == NULL) {
-        c2_err("%s:%d malloc fail", __FUNCTION__, __LINE__);
-        goto __FAILED;
+        c2_err("MpiCodecContext malloc failed!");
+        goto CleanUp;
     }
-
     memset(ctx, 0, sizeof(*ctx));
 
     mWidth = mIntf->mSize->width;
     mHeight = mIntf->mSize->height;
     c2_info("width:%d, height: %d", mWidth, mHeight);
+
     err = mpp_create(&mppCtx, &mppMpi);
     if (err != MPP_OK) {
-        c2_err("%s:%d create fail", __FUNCTION__, __LINE__);
-        goto __FAILED;
+        c2_err("mpp_create failed!");
+        goto CleanUp;
     }
 
     err = mpp_init(mppCtx, MPP_CTX_DEC, mCodingType);
     if (err != MPP_OK) {
-        c2_err("%s unsupport rockit codec id: 0x%x", __FUNCTION__, mCodingType);
-        goto __FAILED;
+        c2_err("mpp_init failed!");
+        goto CleanUp;
     }
-
     {
-        MppFrame frame = NULL;
+        MppFrame          frame = NULL;
+        uint32_t      mppFormat = mColorFormat;
 
-        uint32_t mppFormat = mColorFormat;
         mpp_frame_init(&frame);
         mpp_frame_set_width(frame, mWidth);
         mpp_frame_set_height(frame, mHeight);
@@ -421,48 +411,34 @@ c2_status_t C2RKMpiDec::onInit() {
             mppMpi->control(mppCtx, MPP_DEC_SET_FRAME_INFO, (MppParam)frame);
         }
 
-        c2_info("init block width=%d, height=%d", mpp_frame_get_hor_stride(frame), mpp_frame_get_ver_stride(frame));
-        C2StreamBlockSizeInfo::output blockSize(0u,
-                                                mpp_frame_get_hor_stride(frame),
-                                                mpp_frame_get_ver_stride(frame));
+        c2_info("init block horStride=%d, verStride=%d", mpp_frame_get_hor_stride(frame),
+                mpp_frame_get_ver_stride(frame));
+
         std::vector<std::unique_ptr<C2SettingResult>> failures;
+        C2StreamBlockSizeInfo::output blockSize(0u, mpp_frame_get_hor_stride(frame), mpp_frame_get_ver_stride(frame));
         ret = mIntf->config({&blockSize}, C2_MAY_BLOCK, &failures);
         if (ret != C2_OK) {
-            c2_err("block size config failed!");
-            goto __FAILED;
+            c2_err_f("blockSize config failed! ret=0x%x", ret);
+            goto CleanUp;
         }
 
         C2StreamMaxReferenceCountTuning::output maxRefCount(0, kMaxReferenceCount);
         ret = mIntf->config({&maxRefCount}, C2_MAY_BLOCK, &failures);
         if (ret != C2_OK) {
-            c2_err("max refs count config failed! ret=0x%x", ret);
-            goto __FAILED;
+            c2_err_f("maxRefCount config failed! ret=0x%x", ret);
+            goto CleanUp;
         }
 
         mpp_frame_deinit(&frame);
     }
 
-    // init frame grp
-    err = mpp_buffer_group_get_external(&frmGrp, MPP_BUFFER_TYPE_ION);
-    if (err != MPP_OK) {
-        c2_err("%s mpp_buffer_group_get_external fail !", __FUNCTION__);
-        goto __FAILED;
-    }
-
-    // TODO(control cmds)
-    mppMpi->control(mppCtx, MPP_DEC_SET_EXT_BUF_GROUP, frmGrp);
-
     ctx->mppCtx = mppCtx;
     ctx->mppMpi = mppMpi;
-    ctx->frameGroup = frmGrp;
-
-    mpp_buffer_group_clear(ctx->frameGroup);
-
     mCtx = ctx;
 
     return C2_OK;
-__FAILED:
 
+CleanUp:
     if (mppCtx) {
         mpp_destroy(mppCtx);
         mppCtx =NULL;
@@ -472,12 +448,11 @@ __FAILED:
         ctx = NULL;
     }
 
-    mCtx = NULL;
     return C2_CORRUPTED;
 }
 
 c2_status_t C2RKMpiDec::onStop() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     c2_status_t ret = C2_OK;
 
     if (!mFlushed)
@@ -487,61 +462,63 @@ c2_status_t C2RKMpiDec::onStop() {
 }
 
 void C2RKMpiDec::onReset() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     (void) onStop();
 }
 
 void C2RKMpiDec::onRelease() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
+
+    if (mOutBlock) {
+        mOutBlock.reset();
+    }
+
     if (!mFlushed)
         flush();
 
-    if (mCtx == NULL) {
-        return;
-    }
+    if (mCtx != NULL) {
+        if (mCtx->mCommitList != NULL) {
+            delete mCtx->mCommitList;
+            mCtx->mCommitList = NULL;
+        }
 
-    if (mCtx->mppCtx) {
-        mpp_destroy(mCtx->mppCtx);
-        mCtx->mppCtx =NULL;
-    }
+        if (mCtx->mppCtx) {
+            mpp_destroy(mCtx->mppCtx);
+            mCtx->mppCtx =NULL;
+        }
 
-    if (mCtx->frameGroup != NULL) {
-        mpp_buffer_group_put(mCtx->frameGroup);
-        mCtx->frameGroup = NULL;
-    }
+        if (mCtx->frameGroup != NULL) {
+            mpp_buffer_group_put(mCtx->frameGroup);
+            mCtx->frameGroup = NULL;
+        }
 
-    if (mCtx) {
         free(mCtx);
         mCtx = NULL;
     }
-
-    c2_trace("%s %d in mCtx=%p", __FUNCTION__, __LINE__, mCtx);
 }
 
 c2_status_t C2RKMpiDec::onFlush_sm() {
     c2_status_t ret = C2_OK;
-    ret = flushWhenGenerationChange(C2_OP_UI);
+    ret = flush();
     return ret;
 }
 
 c2_status_t C2RKMpiDec::flush() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     c2_status_t ret = C2_OK;
-    MPP_RET err = MPP_OK;
+    MPP_RET     err = MPP_OK;
 
-    mBufferMaps.clear();
-    mBlockMaps.clear();
+    cleanMppBufferCtx();
     mPtsMaps.clear();
 
     mSignalledOutputEos = false;
     mOutputEos = false;
-    mLocalBufferReady = false;
 
     C2StreamBlockCountInfo::output blockCount(0u);
     std::vector<std::unique_ptr<C2SettingResult>> failures;
     ret = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
     if (ret != C2_OK) {
-        c2_err("block count config failed!");
+        c2_err_f("blockCount config failed! ret=0x%x", ret);
         return C2_BAD_INDEX;
     }
 
@@ -552,52 +529,15 @@ c2_status_t C2RKMpiDec::flush() {
     mpp_buffer_group_clear(mCtx->frameGroup);
     err = mCtx->mppMpi->reset(mCtx->mppCtx);
     if (MPP_OK != err) {
-        c2_err("mpi->reset failed\n");
+        c2_err("mpi reset failed!");
         return C2_CORRUPTED;
     }
     mFlushed = true;
     return ret;
 }
 
-c2_status_t C2RKMpiDec::flushWhenGenerationChange(C2OperatorType type) {
-    c2_info("%s in", __func__);
-    c2_status_t ret = C2_OK;
-    MPP_RET err = MPP_OK;
-
-    mBufferMaps.clear();
-    mBlockMaps.clear();
-    mPtsMaps.clear();
-    if(type == C2_OP_INTERNAL){
-        mSurfaceChange = false;
-        mPreGeneration = 0;
-    }
-    mLocalBufferReady = false;
-
-    C2StreamBlockCountInfo::output blockCount(0u);
-    std::vector<std::unique_ptr<C2SettingResult>> failures;
-    ret = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
-    if (ret != C2_OK) {
-        c2_err("block count config failed!");
-        return C2_BAD_INDEX;
-    }
-
-    mpp_buffer_group_clear(mCtx->frameGroup);
-
-    if (((type == C2_OP_INTERNAL) && mOutputEos) || type == C2_OP_UI) {
-        mSignalledOutputEos = false;
-        mOutputEos = false;
-        err = mCtx->mppMpi->reset(mCtx->mppCtx);
-        if (MPP_OK != err) {
-            c2_err("mpi->reset failed\n");
-            return C2_CORRUPTED;
-        }
-    }
-
-    return ret;
-}
-
 void C2RKMpiDec::fillEmptyWork(const std::unique_ptr<C2Work> &work) {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     uint32_t flags = 0;
     if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
         flags |= C2FrameData::FLAG_END_OF_STREAM;
@@ -620,6 +560,7 @@ void C2RKMpiDec::finishWork(
     } else {
         c2_err("empty block index:%d",index);
     }
+    mOutBlock = nullptr;
     {
         if (buffer && (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC
             || mCodingType == MPP_VIDEO_CodingMPEG2)) {
@@ -662,7 +603,7 @@ void C2RKMpiDec::finishWork(
         work->worklets.front()->output.ordinal = work->input.ordinal;
         work->workletsProcessed = 1u;
     };
-    if (!mIsLocalBuffer) {
+    if (!mAllocWithoutSurface) {
         C2StreamBlockCountInfo::output blockCount(0u);
         std::vector<std::unique_ptr<C2Param>> params;
         c2_status_t err = intf()->query_vb(
@@ -675,9 +616,9 @@ void C2RKMpiDec::finishWork(
         std::vector<std::unique_ptr<C2SettingResult>> failures;
         err = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
         if (err != C2_OK) {
-            c2_err("block count config failed!");
+            c2_err_f("blockCount config failed! ret=0x%x", err);
         }
-        c2_trace("%s %d block count=%d", __FUNCTION__, __LINE__, blockCount.value);
+        c2_trace_f("block count=%d", blockCount.value);
     }
 
     if (work && c2_cntr64_t(index) == work->input.ordinal.frameIndex) {
@@ -711,19 +652,10 @@ void C2RKMpiDec::process(
     work->workletsProcessed = 0u;
     work->worklets.front()->output.flags = work->input.flags;
 
-    mIsLocalBuffer = (pool->getLocalId() > C2BlockPool::PLATFORM_START) ? false : true;
-
-    if (mIsLocalBuffer && !mLocalBufferReady) {
-        err = ensureMppGroupReadyWithoutSurface(pool);
-        if (err != C2_OK) {
-            //TODO when err happen,do something
-            c2_warn("can't ensure mpp group buffer enough without surface! err=%d", err);
-        }
-        mLocalBufferReady = true;
-    }
+    mAllocWithoutSurface = (pool->getLocalId() > C2BlockPool::PLATFORM_START) ? false : true;
 
     if (mSignalledOutputEos) {
-        c2_err("eos,return !");
+        c2_err("mSignalledOutputEos is true, return!");
         work->result = C2_BAD_VALUE;
         return;
     }
@@ -734,7 +666,7 @@ void C2RKMpiDec::process(
         rView = work->input.buffers[0]->data().linearBlocks().front().map().get();
         inSize = rView.capacity();
         if (inSize && rView.error()) {
-            c2_err("read view map failed %d", rView.error());
+            c2_err("read view map failed, error=%d", rView.error());
             work->result = rView.error();
             return;
         }
@@ -750,29 +682,21 @@ void C2RKMpiDec::process(
         return;
     } else if (inSize == 0 && eos) {
         fillEmptyWork(work);
-        c2_info("eos with empty work !");
+        c2_info("eos and input work is empty!");
         mSignalledOutputEos = true;
     }
 
     do {
-        err = mIsLocalBuffer ? C2_OK : ensureMppGroupReady(pool);
-        if (mIsLocalBuffer && !mLocalBufferReady) {
-            err = ensureMppGroupReadyWithoutSurface(pool);
-            if (err != C2_OK) {
-                //TODO when err happen,do something
-                c2_warn("can't ensure mpp group buffer enough without surface! err=%d", err);
-            }
-            mLocalBufferReady = true;
-        }
+        err = mAllocWithoutSurface ? ensureBlockWithoutSurface(pool) : ensureMppGroupReady(pool);
         if (err != C2_OK) {
             //TODO when err happen,do something
-            c2_warn("can't ensure mpp group buffer enough! err=%d", err);
+            c2_warn_f("ensure buffer failed! err=%d", err);
             continue;
         }
         err = decode_sendstream(work);
         if (err != C2_OK) {
             // the work should be try again
-            c2_trace("stream list is full,retry");
+            c2_trace("decode_sendstream failed, retry！");
             retry++;
             usleep(5 * 1000);
             if(retry > kMaxRetryNum) pkt_done = 1;
@@ -782,7 +706,7 @@ void C2RKMpiDec::process(
         err = decode_getoutframe(work);
         if (err != C2_OK) {
             // nothing to do
-            c2_trace("handle output work failed");
+            c2_trace_f("decode_getoutframe failed!");
         }
     } while (!pkt_done);
 
@@ -795,12 +719,12 @@ void C2RKMpiDec::process(
         fillEmptyWork(work);
     }
 
-    c2_trace("%s %d out", __FUNCTION__, __LINE__);
+    c2_trace_f("out");
 }
 
 bool C2RKMpiDec::getVuiParams(MppFrame *frame) {
     if (frame == nullptr) {
-        c2_err("%s %d frame is null", __func__, __LINE__);
+        c2_err_f("frame is null!");
         return false;
     }
 
@@ -811,8 +735,8 @@ bool C2RKMpiDec::getVuiParams(MppFrame *frame) {
     vuiColorAspects.fullRange = (mCodingType == MPP_VIDEO_CodingMPEG2) ? false :
         (mpp_frame_get_color_range(*frame) == MPP_FRAME_RANGE_JPEG);
 
-    c2_trace("pri:%d tra:%d coeff:%d range:%d",vuiColorAspects.primaries, vuiColorAspects.transfer,
-        vuiColorAspects.coeffs, vuiColorAspects.fullRange);
+    c2_trace("coloraspects: pri:%d tra:%d coeff:%d range:%d",vuiColorAspects.primaries,
+        vuiColorAspects.transfer, vuiColorAspects.coeffs, vuiColorAspects.fullRange);
 
     // convert vui aspects to C2 values if changed
     if (!(vuiColorAspects == mBitstreamColorAspects)) {
@@ -876,9 +800,9 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
 
     err = mCtx->mppMpi->decode_put_packet(mCtx->mppCtx, mppPkt);
     if (MPP_OK != err) {
-        c2_trace("%s %d in put packet failed,retry!", __FUNCTION__, __LINE__);
+        c2_trace("decode_put_packet fail,retry!");
         ret = C2_NOT_FOUND;
-        goto __FAILED;
+        goto CleanUp;
     }else{
         if (!(work->input.flags & (C2FrameData::FLAG_CODEC_CONFIG | FLAG_NON_DISPLAY_FRAME))){
             mPtsMaps[frameindex] = timestamps;
@@ -900,7 +824,7 @@ c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
         }
     }
 
-__FAILED:
+CleanUp:
     if (mppPkt) {
         mpp_packet_deinit(&mppPkt);
     }
@@ -916,46 +840,33 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
 
     err = mCtx->mppMpi->decode_get_frame(mCtx->mppCtx, &mppFrame);
     if (MPP_OK != err || NULL == mppFrame) {
-        c2_trace("mpp decode get frame failed,retry! ret: %d", err);
+        c2_trace("decode_get_frame,retry! ret: %d", err);
         ret = C2_NOT_FOUND;
-        goto __FAILED;
+        goto CleanUp;
     }
 
     infochange = mpp_frame_get_info_change(mppFrame);
     if (infochange && !mpp_frame_get_eos(mppFrame)) {
-        RK_U32 width = mpp_frame_get_width(mppFrame);
-        RK_U32 height = mpp_frame_get_height(mppFrame);
-        RK_U32 hor_stride = mpp_frame_get_hor_stride(mppFrame);
-        RK_U32 ver_stride = mpp_frame_get_ver_stride(mppFrame);
+        int32_t width = mpp_frame_get_width(mppFrame);
+        int32_t height = mpp_frame_get_height(mppFrame);
+        int32_t hor_stride = mpp_frame_get_hor_stride(mppFrame);
+        int32_t ver_stride = mpp_frame_get_ver_stride(mppFrame);
         MppFrameFormat format = mpp_frame_get_fmt(mppFrame);
 
-        c2_info("decode_get_frame get info changed found\n");
-        c2_info("decoder require buffer w:h [%d:%d] stride [%d:%d]",
+        c2_info("infochange happen, decoder require buffer w:h [%d:%d] stride [%d:%d]",
                     width, height, hor_stride, ver_stride);
 
-        mBufferMaps.clear();
-        mBlockMaps.clear();
+        cleanMppBufferCtx();
         err = mpp_buffer_group_clear(mCtx->frameGroup);
         if (err) {
-            c2_err("clear buffer group failed ret %d\n", ret);
+            c2_err("mpp_buffer_group_clear failed! ret=%d\n", ret);
             ret = C2_CORRUPTED;
-            goto __FAILED;
+            goto CleanUp;
         }
         mWidth = width;
         mHeight = height;
         mColorFormat = format;
-        if (mIsLocalBuffer) {
-            mLocalBufferReady = false;
-            C2StreamBlockSizeInfo::output   blockSize(0u, hor_stride, ver_stride);
-            std::vector<std::unique_ptr<C2SettingResult>> failures;
-            ret = mIntf->config({ &blockSize},
-                                C2_MAY_BLOCK,
-                                &failures);
-            if (ret != C2_OK) {
-                c2_err("Cannot set width and height");
-                goto __FAILED;
-            }
-        } else {
+        if (!mAllocWithoutSurface) {
             C2StreamPictureSizeInfo::output size(0u, mWidth, mHeight);
             C2StreamBlockSizeInfo::output   blockSize(0u, hor_stride, ver_stride);
             C2StreamBlockCountInfo::output  blockCount(0u);
@@ -964,8 +875,8 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
                                 C2_MAY_BLOCK,
                                 &failures);
             if (ret != C2_OK) {
-                c2_err("Cannot set width and height");
-                goto __FAILED;
+                c2_err_f("size and blockSize config failed!");
+                goto CleanUp;
             }
         }
         /*
@@ -974,27 +885,35 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
          */
         err = mCtx->mppMpi->control(mCtx->mppCtx, MPP_DEC_SET_INFO_CHANGE_READY, NULL);
         if (err) {
-            c2_err("info change ready failed ret %d\n", ret);
+            c2_err_f("control MPP_DEC_SET_INFO_CHANGE_READY failed! ret=%d\n", ret);
             ret = C2_CORRUPTED;
-            goto __FAILED;
+            goto CleanUp;
         }
 
         ret = C2_NO_MEMORY;
     } else {
-        c2_trace("%s:, frame info(mpp_frame=%p frameW=%d frameH=%d W=%d H=%d"
-                           " pts=%lld dts=%lld Err=%d eos=%d)",
-                           __FUNCTION__, mppFrame,
-                           mpp_frame_get_hor_stride(mppFrame),
-                           mpp_frame_get_ver_stride(mppFrame),
-                           mpp_frame_get_width(mppFrame),
-                           mpp_frame_get_height(mppFrame),
-                           mpp_frame_get_pts(mppFrame),
-                           mpp_frame_get_dts(mppFrame),
-                           mpp_frame_get_errinfo(mppFrame),
-                           mpp_frame_get_eos(mppFrame));
+        c2_trace("frame info(mpp_frame=%p horStride=%d verStride=%d width=%d height=%d"
+                    " pts=%lld dts=%lld err=%d eos=%d)",mppFrame,
+                mpp_frame_get_hor_stride(mppFrame), mpp_frame_get_ver_stride(mppFrame),
+                mpp_frame_get_width(mppFrame), mpp_frame_get_height(mppFrame),
+                mpp_frame_get_pts(mppFrame), mpp_frame_get_dts(mppFrame),
+                mpp_frame_get_errinfo(mppFrame), mpp_frame_get_eos(mppFrame));
 
         uint64_t timestamp = (uint64_t)mpp_frame_get_pts(mppFrame);
         uint64_t workIndex = -1;
+        MppBufferCtx* bufferCtx = NULL;
+        std::shared_ptr<C2GraphicBlock> block = NULL;
+        MppBuffer mppBuffer = mpp_frame_get_buffer(mppFrame);
+
+        if (mppBuffer == NULL) {
+            if (mpp_frame_get_eos(mppFrame)) {
+                mOutputEos = true;
+                c2_info_f("mpp_frame_get_eos true!");
+            }
+            c2_err("empty mppBuffer!");
+            goto CleanUp;
+        }
+
         for (auto it_ts = mPtsMaps.begin(); it_ts != mPtsMaps.end(); it_ts++) {
             if (timestamp == it_ts->second) {
                 workIndex = it_ts->first;
@@ -1003,7 +922,7 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
             }
         }
         if (workIndex == -1){
-            c2_err("not find timestamp:%llu !", timestamp);
+            c2_err("can't find timestamp:%llu !", timestamp);
             for (auto it_ts = mPtsMaps.begin(); it_ts != mPtsMaps.end(); it_ts++) {
                 if (0 == it_ts->second) {
                     workIndex = it_ts->first;
@@ -1011,25 +930,54 @@ c2_status_t C2RKMpiDec::decode_getoutframe(
                     break;
                 }
             }
-            //goto __FAILED;
         }
-        auto it = mBlockMaps.find(mpp_frame_get_buffer(mppFrame));
-        if (it == mBlockMaps.end()){
-            c2_err("not find block !");
-            goto __FAILED;
+        if (mAllocWithoutSurface) {
+            int32_t width = mpp_frame_get_width(mppFrame);
+            int32_t height = mpp_frame_get_height(mppFrame);
+            int32_t hor_stride = mpp_frame_get_hor_stride(mppFrame);
+            int32_t ver_stride = mpp_frame_get_ver_stride(mppFrame);
+            int32_t fd_src = mpp_buffer_get_fd(mppBuffer);
+            auto c2Handle = mOutBlock->handle();
+            int32_t fd_dst = c2Handle->data[0];
+            RgaParam srcParam, dstParam;
+            if (fd_dst == -1) {
+                c2_err("empty frame!");
+                goto CleanUp;
+            }
+            C2RKRgaDef::paramInit(&srcParam, fd_src,
+                                    width, height, hor_stride, ver_stride);
+            C2RKRgaDef::paramInit(&dstParam, fd_dst,
+                                    width, height, hor_stride, ver_stride);
+            if (!C2RKRgaDef::nv12Copy(srcParam, dstParam)) {
+                c2_err("nv12Copy failed!");
+                // return C2_BAD_VALUE;
+            }
+            block = mOutBlock;
         } else {
-            if (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC
-                || mCodingType == MPP_VIDEO_CodingMPEG2)
-                (void)getVuiParams(&mppFrame);
+            bufferCtx = (MppBufferCtx*)findMppBufferCtx(mppBuffer);
+            if (bufferCtx == NULL || bufferCtx->mBlock == NULL){
+                c2_err("can't find block!");
+                goto CleanUp;
+            }
+            bufferCtx->mSite = BUFFER_SITE_BY_C2;
+            if (mppBuffer)
+                mpp_buffer_inc_ref(mppBuffer);
+            block = bufferCtx->mBlock;
         }
+
+        if (mCodingType == MPP_VIDEO_CodingAVC || mCodingType == MPP_VIDEO_CodingHEVC
+            || mCodingType == MPP_VIDEO_CodingMPEG2)
+            (void)getVuiParams(&mppFrame);
+
         if (mpp_frame_get_eos(mppFrame)) {
             mOutputEos = true;
-            c2_info("mpp_frame_get_eos true !");
+            c2_info_f("mpp_frame_get_eos true!");
         }
         c2_trace("frame index: %llu", workIndex);
-        finishWork(workIndex, work, it->second);
+        finishWork(workIndex, work, block);
     }
-__FAILED:
+
+CleanUp:
     /*
     * IMPORTANT: mppFrame is malloced from mpi->decode_get_frame
     * So we need to deinit mppFrame here. But the buffer in the frame should not be free with mppFrame.
@@ -1045,7 +993,7 @@ c2_status_t C2RKMpiDec::drainInternal(
     uint32_t drainMode,
     const std::shared_ptr<C2BlockPool> &pool,
     const std::unique_ptr<C2Work> &work) {
-    c2_trace("%s %d in", __FUNCTION__, __LINE__);
+    c2_info_f("in");
     c2_status_t ret = C2_OK;
     uint32_t retry = 0;
 
@@ -1059,17 +1007,9 @@ c2_status_t C2RKMpiDec::drainInternal(
     }
 
     while (!mOutputEos){
-        if (mIsLocalBuffer && !mLocalBufferReady) {
-            ret = ensureMppGroupReadyWithoutSurface(pool);
-            if (ret != C2_OK) {
-                //TODO when err happen,do something
-                c2_warn("can't ensure mpp group buffer enough without surface! err=%d", ret);
-            }
-            mLocalBufferReady = true;
-        }
-        ret = mIsLocalBuffer ? C2_OK : ensureMppGroupReady(pool);
+        ret = mAllocWithoutSurface ? ensureBlockWithoutSurface(pool) : ensureMppGroupReady(pool);
         if (ret != C2_OK) {
-            c2_warn("can't ensure mpp group buffer enough! err=%d", ret);
+            c2_warn_f("can't ensure buffer! ret=%d", ret);
         }
         ret = decode_getoutframe(work);
         retry++;
@@ -1091,7 +1031,7 @@ c2_status_t C2RKMpiDec::drain(
     return drainInternal(drainMode, pool, nullptr);
 }
 
-c2_status_t C2RKMpiDec::ensureMppGroupReadyWithoutSurface(
+c2_status_t C2RKMpiDec::ensureBlockWithoutSurface(
         const std::shared_ptr<C2BlockPool> &pool) {
     std::shared_ptr<C2GraphicBlock> outblock;
     c2_status_t                     ret     = C2_OK;
@@ -1105,14 +1045,12 @@ c2_status_t C2RKMpiDec::ensureMppGroupReadyWithoutSurface(
     C2StreamBlockSizeInfo::output blockSize(0u, 0, 0);
     std::vector<std::unique_ptr<C2Param>> params;
     ret = intf()->query_vb(
-            {
-                &blockSize
-            },
+            { &blockSize },
             {},
             C2_DONT_BLOCK,
             &params);
     if (ret) {
-        c2_err(" %s query params failed!", __func__);
+        c2_err_f("query params failed!");
         return ret;
     }
 
@@ -1120,7 +1058,7 @@ c2_status_t C2RKMpiDec::ensureMppGroupReadyWithoutSurface(
     frameH = blockSize.height;
 
     if (frameW <= 0 || frameH <= 0) {
-        c2_err("query frameW or frameH failed, frameW=%d, frameH=%d", frameW, frameH);
+        c2_err("query block width or height failed, width=%d, height=%d", frameW, frameH);
         return ret;
     }
 
@@ -1128,23 +1066,22 @@ c2_status_t C2RKMpiDec::ensureMppGroupReadyWithoutSurface(
                       | GRALLOC_USAGE_SW_WRITE_OFTEN
                       | RK_GRALLOC_USAGE_SPECIFY_STRIDE);
 
-    for (uint32_t i = 0; i < kMaxBlockCount; i++) {
+    if (mOutBlock &&
+            (mOutBlock->width() != frameW || mOutBlock->height() != frameH)) {
+        mOutBlock.reset();
+    }
+    if (!mOutBlock) {
         ret = pool->fetchGraphicBlock(frameW,
                                       frameH,
                                       format,
                                       C2AndroidMemoryUsage::FromGrallocUsage(usage),
-                                      &outblock);
+                                      &mOutBlock);
         if (ret != C2_OK) {
-            c2_warn("fetchGraphicBlock for Output failed with status %d", ret);
-            break;
+            c2_err("fetchGraphicBlock failed with status %d", ret);
+            return ret;
         }
-        c2_trace("provided (%dx%d) required (%dx%d) index(%d)",
-              outblock->width(), outblock->height(), frameW, frameH, i);
-        ret = registerLocalBufferToMpp(outblock);
-        if (ret != C2_OK) {
-            c2_err("%s register buffer to mpp failed with status %d", __func__, ret);
-            break;
-        }
+        c2_trace("provided (%dx%d) required (%dx%d)",
+              mOutBlock->width(), mOutBlock->height(), frameW, frameH);
     }
 
     return ret;
@@ -1154,10 +1091,25 @@ c2_status_t C2RKMpiDec::ensureMppGroupReady(
         const std::shared_ptr<C2BlockPool> &pool) {
     std::shared_ptr<C2GraphicBlock> outblock;
     c2_status_t                     ret     = C2_OK;
+    MPP_RET                         err     = MPP_OK;
     uint32_t                        frameH  = 0;
     uint32_t                        frameW  = 0;
     // TODO() format can't define here
     uint32_t                        format  = HAL_PIXEL_FORMAT_YCrCb_NV12;
+    MppBufferGroup                  frmGrp  = NULL;
+    if(mCtx->frameGroup == NULL) {
+        c2_info("alloc with surface,get external frame buffer group");
+        // init frame grp
+        err = mpp_buffer_group_get_external(&frmGrp, MPP_BUFFER_TYPE_ION);
+        if (err != MPP_OK) {
+            c2_err_f("mpp_buffer_group_get_external failed!");
+            return C2_BAD_INDEX;
+        }
+        mCtx->mppMpi->control(mCtx->mppCtx, MPP_DEC_SET_EXT_BUF_GROUP, frmGrp);
+        mCtx->frameGroup = frmGrp;
+        mpp_buffer_group_clear(mCtx->frameGroup);
+        mCtx->mCommitList = new Vector<MppBufferCtx*>;
+    }
 
     format = colorFormatMpiToAndroid(mColorFormat);
 
@@ -1166,11 +1118,7 @@ c2_status_t C2RKMpiDec::ensureMppGroupReady(
     C2StreamBlockCountInfo::output blockCount(0u);
     std::vector<std::unique_ptr<C2Param>> params;
     ret = intf()->query_vb(
-            {
-                &maxRefsCount,
-                &blockSize,
-                &blockCount
-            },
+            { &maxRefsCount, &blockSize, &blockCount },
             {},
             C2_DONT_BLOCK,
             &params);
@@ -1222,120 +1170,52 @@ c2_status_t C2RKMpiDec::ensureMppGroupReady(
         count++;
     }
 
-    if (ret != C2_OK && mSurfaceChange) {
-        flushWhenGenerationChange(C2_OP_INTERNAL);
-        return ret;
-    }
-
     blockCount.value += count;
     c2_trace("%s %d block count=%d", __FUNCTION__, __LINE__, blockCount.value);
     std::vector<std::unique_ptr<C2SettingResult>> failures;
     ret = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
     if (ret != C2_OK) {
-        c2_err("block count config failed!");
+        c2_err_f("blockCount config failed! ret=0x%x", ret);
         return C2_BAD_INDEX;
     }
 
     return ret;
 }
 
-c2_status_t C2RKMpiDec::registerLocalBufferToMpp(std::shared_ptr<C2GraphicBlock> block) {
-    uint32_t                      shareFd = 0;
-
-    if (!block.get()) {
-        c2_err("register buffer failed, block is null");
-        return C2_CORRUPTED;
-    }
-
-    auto c2Handle = block->handle();
-    shareFd = c2Handle->data[0];
-
-    uint32_t bqSlot;
-    uint32_t width;
-    uint32_t height;
-    uint32_t format;
-    uint64_t usage;
-    uint32_t stride;
-    uint32_t generation;
-    uint64_t bqId;
-    android::_UnwrapNativeCodec2GrallocMetadata(
-            block->handle(), &width, &height, &format, &usage, &stride, &generation, &bqId, &bqSlot);
-
-    MppBufferInfo info;
-    MppBuffer mppBuffer = NULL;
-    memset(&info, 0, sizeof(info));
-    info.type = MPP_BUFFER_TYPE_ION;
-    info.fd = shareFd;
-    info.ptr = NULL;
-    info.hnd = NULL;
-    info.size = width * height * 2;
-
-    mpp_buffer_import_with_tag(mCtx->frameGroup,
-                            &info,
-                            &mppBuffer,
-                            "codec2-Mpp-Group",
-                            __FUNCTION__);
-
-
-    c2_trace("%s %d width: %d height: %d mppBuffer: %p outBlock: %p info.fd=%d block fd=%d",
-            __FUNCTION__, __LINE__, width, height, mppBuffer, block.get(), info.fd, shareFd);
-    mBlockMaps[mppBuffer] = block;
-    mpp_buffer_put(mppBuffer);
-
-    return C2_OK;
-}
-
 c2_status_t C2RKMpiDec::registerBufferToMpp(std::shared_ptr<C2GraphicBlock> block) {
-    uint32_t                    findIndex = 0;
     uint32_t                      shareFd = 0;
+    MppBufferCtx*               bufferCtx = NULL;
+    uint32_t bqSlot, width, height, format, stride, generation;
+    uint64_t usage, bqId;
 
     if (!block.get()) {
-        c2_err("register buffer failed, block is null");
+        c2_err("can't get block!");
         return C2_CORRUPTED;
     }
 
     auto c2Handle = block->handle();
     shareFd = c2Handle->data[0];
 
-    uint32_t bqSlot;
-    uint32_t width;
-    uint32_t height;
-    uint32_t format;
-    uint64_t usage;
-    uint32_t stride;
-    uint32_t generation;
-    uint64_t bqId;
     android::_UnwrapNativeCodec2GrallocMetadata(
-            block->handle(), &width, &height, &format, &usage, &stride, &generation, &bqId, &bqSlot);
+            c2Handle, &width, &height, &format, &usage, &stride, &generation, &bqId, &bqSlot);
 
-    if (mPreGeneration == 0)
-        mPreGeneration = generation;
-    if (mPreGeneration != generation) {
-        char value[128 + 1];
-        memset(value, 0, sizeof(value));
-        mPreGeneration = generation;
-        if (Rockchip_C2_GetEnvStr("cts_gts.exo.gts", value, NULL) && !strcasecmp(value, "true")) {
-            c2_info("when surface changed during GtsExoPlayerTest,do nothing!");
-        } else {
-            //for douyin to avoid error display
-            mSurfaceChange = true;
-            c2_err("surface changed !");
-            return C2_CORRUPTED;
-        }
-    }
-    c2_trace("%s %d generation:%ld bqId:%lld bqslot:%ld shareFd：%d", __func__, __LINE__, (unsigned long)generation, (unsigned long long)bqId,
-            (unsigned long)bqSlot, shareFd);
+    c2_trace_f("generation:%d bqId:%lld bqslot:%d shareFd:%d",
+            generation, bqId, bqSlot, shareFd);
+
     std::map<uint32_t, void *>::iterator it;
-    findIndex = bqSlot;
-    it = mBufferMaps.find(findIndex);
-    if (it != mBufferMaps.end()) {
-        // list have this item.
-        MppBuffer mppBuffer = it->second;
-        mBlockMaps[mppBuffer] = block;
-        c2_trace("%s %d mppBuffer: %p outBlock: %p block fd=%d slot=%d",
-                __FUNCTION__, __LINE__, mppBuffer, block.get(), shareFd, bqSlot);
+    bufferCtx = (MppBufferCtx*)findMppBufferCtx((int32_t)bqSlot);
+    if (bufferCtx != NULL) {
+        //return buffer back to mpp
+        MppBuffer mppBuffer = bufferCtx->mMppBuffer;
+        bufferCtx->mSite = BUFFER_SITE_BY_MPI;
+        if (mppBuffer != NULL)
+            mpp_buffer_put(mppBuffer);
+        bufferCtx->mBlock = block;
+
+        c2_trace_f("mppBuffer:%p outBlock:%p block fd=%d slot=%d",
+                mppBuffer, block.get(), shareFd, bqSlot);
     } else {
-        // register this buffer.
+        // register this buffer to mpp grp.
         MppBufferInfo info;
         MppBuffer mppBuffer = NULL;
         memset(&info, 0, sizeof(info));
@@ -1352,15 +1232,72 @@ c2_status_t C2RKMpiDec::registerBufferToMpp(std::shared_ptr<C2GraphicBlock> bloc
                                 __FUNCTION__);
 
 
-        c2_trace("%s %d width: %d height: %d mppBuffer: %p outBlock: %p info.fd=%d block fd=%d slot=%d",
-                __FUNCTION__, __LINE__, width, height, mppBuffer, block.get(), info.fd, shareFd, bqSlot);
-        mBufferMaps[findIndex] = mppBuffer;
-        mBlockMaps[mppBuffer] = block;
+        c2_trace_f("width:%d height:%d mppBuffer:%p outBlock:%p info.fd=%d block fd=%d slot=%d",
+                width, height, mppBuffer, block.get(), info.fd, shareFd, bqSlot);
 
+        bufferCtx = new MppBufferCtx();
+        bufferCtx->mIndex = (int32_t)bqSlot;
+        bufferCtx->mMppBuffer = mppBuffer;
+        bufferCtx->mBlock = block;
+        bufferCtx->mSite = BUFFER_SITE_BY_MPI;
+        mCtx->mCommitList->push(bufferCtx);
         mpp_buffer_put(mppBuffer);
     }
 
     return C2_OK;
+}
+
+void* C2RKMpiDec::findMppBufferCtx(int32_t index) {
+    MppBufferCtx* bufferCtx = NULL;
+    if (mCtx != NULL && mCtx->mCommitList != NULL) {
+        for (int i = 0; i < mCtx->mCommitList->size(); i++) {
+            bufferCtx = mCtx->mCommitList->editItemAt(i);
+            if (bufferCtx && bufferCtx->mIndex == index) {
+                return (void*)bufferCtx;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+void* C2RKMpiDec::findMppBufferCtx(MppBuffer buffer) {
+    MppBufferCtx* bufferCtx = NULL;
+    if (mCtx != NULL && mCtx->mCommitList != NULL) {
+        for (int i = 0; i < mCtx->mCommitList->size(); i++) {
+            bufferCtx = mCtx->mCommitList->editItemAt(i);
+            if (bufferCtx && bufferCtx->mMppBuffer == buffer) {
+                return (void*)bufferCtx;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+void C2RKMpiDec::cleanMppBufferCtx() {
+    while (mCtx != NULL && mCtx->mCommitList != NULL && !mCtx->mCommitList->isEmpty()) {
+        MppBufferCtx* buffer = mCtx->mCommitList->editItemAt(0);
+        if (buffer != NULL) {
+            if (buffer->mSite == BUFFER_SITE_BY_C2)
+                mpp_buffer_put(buffer->mMppBuffer);
+            delete buffer;
+        }
+
+        mCtx->mCommitList->removeAt(0);
+    }
+}
+
+void C2RKMpiDec::cleanMppBufferCtx(int32_t site) {
+    if (mCtx != NULL && mCtx->mCommitList != NULL) {
+        for (int i = mCtx->mCommitList->size()-1; i >= 0; i--) {
+            MppBufferCtx* buffer = mCtx->mCommitList->editItemAt(i);
+            if (buffer != NULL && buffer->mSite == site) {
+                delete buffer;
+                mCtx->mCommitList->removeAt(i);
+            }
+        }
+    }
 }
 
 class C2RKMpiDecFactory : public C2ComponentFactory {
@@ -1371,15 +1308,15 @@ public:
               mComponentName(componentName) {
         int err = getMimeFromComponentName(componentName, &mMime);
         if (err) {
-            c2_err("get mime from component name failed, component name=%s", componentName.c_str());
+            c2_err("getMimeFromComponentName failed, component name=%s", componentName.c_str());
         }
         err = getDomainFromComponentName(componentName, &mDomain);
         if (err) {
-            c2_err("get domain from component name failed, component name=%s", componentName.c_str());
+            c2_err("getDomainFromComponentName failed, component name=%s", componentName.c_str());
         }
         err = getKindFromComponentName(componentName, &mKind);
         if (err) {
-            c2_err("get kind from component name failed, component name=%s", componentName.c_str());
+            c2_err("getKindFromComponentName failed, component name=%s", componentName.c_str());
         }
     }
 
@@ -1402,7 +1339,7 @@ public:
             c2_node_id_t id,
             std::shared_ptr<C2ComponentInterface>* const interface,
             std::function<void(C2ComponentInterface*)> deleter) override {
-        c2_trace("%s %d in", __FUNCTION__, __LINE__);
+        c2_trace_f("in");
         *interface = std::shared_ptr<C2ComponentInterface>(
                 new C2RKInterface<C2RKMpiDec::IntfImpl>(
                         mComponentName.c_str(),
@@ -1424,7 +1361,7 @@ private:
 };
 
 C2ComponentFactory* CreateRKMpiDecFactory(std::string componentName) {
-    c2_trace("in %s", __func__);
+    c2_trace_f("in");
     return new ::android::C2RKMpiDecFactory(componentName);
 }
 

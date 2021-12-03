@@ -19,17 +19,15 @@
 
 #include <sys/time.h>
 #include <map>
-
-#include <media/stagefright/foundation/ColorUtils.h>
-
 #include <atomic>
+#include <utils/Vector.h>
+#include <media/stagefright/foundation/ColorUtils.h>
 #include <C2RKComponent.h>
 #include <C2RKMediaDefs.h>
 #include <C2Debug.h>
 #include <C2PlatformSupport.h>
 #include <Codec2Mapper.h>
 #include <C2RKInterface.h>
-
 #include "mpp/rk_mpi.h"
 #include "C2RKLog.h"
 
@@ -37,17 +35,37 @@ namespace android {
 
 #define FLAG_NON_DISPLAY_FRAME (1u << 15)
 
+typedef struct _MppBufferCtx {
+    /* index to find MppBuffer */
+    int32_t       mIndex;
+    /* mpp buffer */
+    MppBuffer mMppBuffer;
+    /* who own this buffer */
+    int32_t       mSite;
+    /* block shared by surface*/
+    std::shared_ptr<C2GraphicBlock> mBlock;
+} MppBufferCtx;
+
 typedef struct _MpiCodecContext {
     MppCtx              mppCtx;
     MppApi             *mppMpi;
     MppBufferGroup      frameGroup;
+    /*
+     * commit buffer list.
+     * These buffers are alloced by c2,
+     * commit to decoder(encoder) for keep frames(stream).
+     */
+    Vector<MppBufferCtx*>* mCommitList;
 } MpiCodecContext;
+
+typedef enum {
+    BUFFER_SITE_BY_MPI = 0,
+    BUFFER_SITE_BY_C2 = 1,
+} MppBufferSite;
 
 constexpr uint32_t kDefaultOutputDelay = 16;
 constexpr uint32_t kMaxOutputDelay = 16;
 constexpr uint32_t kMaxReferenceCount = 16;
-constexpr uint32_t k4KMaxReferenceCount = 8;
-constexpr uint32_t kMaxBlockCount = 32;
 constexpr uint32_t kMaxRetryNum = 20;
 constexpr size_t kMinInputBufferSize = 2 * 1024 * 1024;
 
@@ -88,24 +106,22 @@ private:
         uint32_t drainMode,
         const std::shared_ptr<C2BlockPool> &pool,
         const std::unique_ptr<C2Work> &work);
-    c2_status_t ensureMppGroupReadyWithoutSurface(const std::shared_ptr<C2BlockPool> &pool);
+    c2_status_t ensureBlockWithoutSurface(const std::shared_ptr<C2BlockPool> &pool);
     c2_status_t ensureMppGroupReady(const std::shared_ptr<C2BlockPool> &pool);
-    c2_status_t registerLocalBufferToMpp(std::shared_ptr<C2GraphicBlock> block);
     c2_status_t registerBufferToMpp(std::shared_ptr<C2GraphicBlock> block);
+    void* findMppBufferCtx(int32_t index);
+    void* findMppBufferCtx(MppBuffer buffer);
+    void cleanMppBufferCtx();
+    void cleanMppBufferCtx(int32_t site);
 
 private:
     std::shared_ptr<IntfImpl> mIntf;
-
-    std::map<uint32_t, void *> mBufferMaps;
-    std::map<void *, std::shared_ptr<C2GraphicBlock>> mBlockMaps;
+    std::shared_ptr<C2GraphicBlock> mOutBlock;
     std::map<uint64_t, uint64_t> mPtsMaps;
     int64_t mLastPts;
-    uint32_t mPreGeneration;
-    bool mSurfaceChange;
     bool mOutputEos;
     bool mFlushed;
-    bool mIsLocalBuffer;
-    bool mLocalBufferReady;
+    bool mAllocWithoutSurface;
 
     uint32_t mWidth;
     uint32_t mHeight;
