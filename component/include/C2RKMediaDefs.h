@@ -28,22 +28,6 @@ enum C2OperatorType {
     C2_OP_UI
 };
 
-typedef struct _RKMemLinear {
-    int32_t  phyAddr;
-    int32_t  size;
-    void    *windowBuf;
-} RKMemLinear;
-
-typedef struct _RKVideoPlane {
-    void        *addr;
-    uint32_t    allocSize;
-    uint32_t    dataSize;
-    uint32_t    offset;
-    int32_t     fd;
-    int32_t     type;
-    uint32_t    stride;
-} RKVideoPlane;
-
 namespace android {
 
 #define C2_SAFE_FREE(p) { if (p) {free(p); (p)=NULL;} }
