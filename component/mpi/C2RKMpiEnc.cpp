@@ -19,12 +19,6 @@
 
 #include <utils/misc.h>
 
-#include <media/hardware/VideoAPI.h>
-#include <media/stagefright/MediaDefs.h>
-#include <media/stagefright/MediaErrors.h>
-#include <media/stagefright/MetaData.h>
-#include <media/stagefright/foundation/AUtils.h>
-
 #include <C2Debug.h>
 #include <Codec2Mapper.h>
 #include <C2PlatformSupport.h>
@@ -138,6 +132,19 @@ public:
                 .withFields({C2F(mGop, m.values[0].type_).any(),
                              C2F(mGop, m.values[0].count).any()})
                 .withSetter(GopSetter)
+                .build());
+
+        addParameter(
+                DefineParam(mPictureQuantization, C2_PARAMKEY_PICTURE_QUANTIZATION)
+                .withDefault(C2StreamPictureQuantizationTuning::output::AllocShared(
+                        0 /* flexCount */, 0u /* stream */))
+                .withFields({C2F(mPictureQuantization, m.values[0].type_).oneOf(
+                                {C2Config::picture_type_t(I_FRAME),
+                                  C2Config::picture_type_t(P_FRAME),
+                                  C2Config::picture_type_t(B_FRAME)}),
+                             C2F(mPictureQuantization, m.values[0].min).any(),
+                             C2F(mPictureQuantization, m.values[0].max).any()})
+                .withSetter(PictureQuantizationSetter)
                 .build());
 
         addParameter(
@@ -344,6 +351,16 @@ public:
         c2_info("%s %d in", __FUNCTION__, __LINE__);
         return C2R::Ok();
     }
+
+    static C2R PictureQuantizationSetter(bool mayBlock,
+                                         C2P<C2StreamPictureQuantizationTuning::output> &me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info("%s %d in", __FUNCTION__, __LINE__);
+
+        return C2R::Ok();
+    }
+
 
     uint32_t getSyncFramePeriod_l() const {
         if (mSyncFramePeriod->value < 0 || mSyncFramePeriod->value == INT64_MAX) {
@@ -591,16 +608,24 @@ public:
     }
 
     // unsafe getters
-    std::shared_ptr<C2StreamPictureSizeInfo::input> getSize_l() const { return mSize; }
-    std::shared_ptr<C2StreamIntraRefreshTuning::output> getIntraRefresh_l() const { return mIntraRefresh; }
-    std::shared_ptr<C2StreamFrameRateInfo::output> getFrameRate_l() const { return mFrameRate; }
-    std::shared_ptr<C2StreamBitrateModeTuning::output> getBitrateMode_l() const { return mBitrateMode; }
-    std::shared_ptr<C2StreamBitrateInfo::output> getBitrate_l() const { return mBitrate; }
-    std::shared_ptr<C2StreamRequestSyncFrameTuning::output> getRequestSync_l() const { return mRequestSync; }
-    std::shared_ptr<C2StreamGopTuning::output> getGop_l() const { return mGop; }
-    std::shared_ptr<C2StreamColorAspectsInfo::output> getCodedColorAspects_l() const {
-        return mCodedColorAspects;
-    }
+    std::shared_ptr<C2StreamPictureSizeInfo::input> getSize_l() const
+    { return mSize; }
+    std::shared_ptr<C2StreamIntraRefreshTuning::output> getIntraRefresh_l() const
+    { return mIntraRefresh; }
+    std::shared_ptr<C2StreamFrameRateInfo::output> getFrameRate_l() const
+    { return mFrameRate; }
+    std::shared_ptr<C2StreamBitrateModeTuning::output> getBitrateMode_l() const
+    { return mBitrateMode; }
+    std::shared_ptr<C2StreamBitrateInfo::output> getBitrate_l() const
+    { return mBitrate; }
+    std::shared_ptr<C2StreamRequestSyncFrameTuning::output> getRequestSync_l() const
+    { return mRequestSync; }
+    std::shared_ptr<C2StreamGopTuning::output> getGop_l() const
+    { return mGop; }
+    std::shared_ptr<C2StreamPictureQuantizationTuning::output> getPictureQuantization_l() const
+    { return mPictureQuantization; }
+    std::shared_ptr<C2StreamColorAspectsInfo::output> getCodedColorAspects_l() const
+    { return mCodedColorAspects; }
 
 private:
     std::shared_ptr<C2StreamUsageTuning::input> mUsage;
@@ -612,6 +637,7 @@ private:
     std::shared_ptr<C2StreamProfileLevelInfo::output> mProfileLevel;
     std::shared_ptr<C2StreamSyncFrameIntervalTuning::output> mSyncFramePeriod;
     std::shared_ptr<C2StreamGopTuning::output> mGop;
+    std::shared_ptr<C2StreamPictureQuantizationTuning::output> mPictureQuantization;
     std::shared_ptr<C2StreamBitrateModeTuning::output> mBitrateMode;
     std::shared_ptr<C2StreamColorAspectsInfo::input> mColorAspects;
     std::shared_ptr<C2StreamColorAspectsInfo::output> mCodedColorAspects;
@@ -633,10 +659,6 @@ C2RKMpiEnc::C2RKMpiEnc(
       mSignalledError(false),
       mHorStride(0),
       mVerStride(0),
-      mEncProfile(0),
-      mEncLevel(0),
-      mIInterval(0),
-      mIDRInterval(0),
       mInFile(nullptr),
       mOutFile(nullptr) {
     c2_info("version: %s", C2_GIT_BUILD_VERSION);
@@ -706,21 +728,251 @@ c2_status_t C2RKMpiEnc::onFlush_sm() {
     return C2_OK;
 }
 
-c2_status_t C2RKMpiEnc::setVuiParams() {
+c2_status_t C2RKMpiEnc::setupBaseCodec() {
+    /* default stride */
+    mHorStride = C2_ALIGN(mSize->width, 16);
+    mVerStride = C2_ALIGN(mSize->height, 8);
+
+    c2_info("setupBaseCodec: coding %d w %d h %d hor %d ver %d",
+            mCodingType, mSize->width, mSize->height, mHorStride, mVerStride);
+
+    mpp_enc_cfg_set_s32(mEncCfg, "codec:type", mCodingType);
+
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:width", mSize->width);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:height", mSize->height);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:hor_stride", mHorStride);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:ver_stride", mVerStride);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:format", MPP_FMT_YUV420SP);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:rotation", MPP_ENC_ROT_0);
+
+    if (mCodingType == MPP_VIDEO_CodingAVC) {
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_en", 1);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_idc", 0);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:trans8x8", 1);
+    }
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::setupFrameRate() {
+    float frameRate = 0.0;
+    uint32_t idrInterval = 0, gop = 0;
+
+    IntfImpl::Lock lock = mIntf->lock();
+
+    std::shared_ptr<C2StreamGopTuning::output> c2Gop = mIntf->getGop_l();
+    std::shared_ptr<C2StreamFrameRateInfo::output> c2FrameRate
+            = mIntf->getFrameRate_l();
+
+    idrInterval = mIntf->getSyncFramePeriod_l();
+    frameRate = c2FrameRate->value;
+
+    if (frameRate == 1) {
+        // set default frameRate 30
+        frameRate = 30;
+    }
+
+    if (c2Gop && c2Gop->flexCount() > 0) {
+        uint32_t syncInterval = 30;
+        uint32_t iInterval = 0;
+        uint32_t maxBframes = 0;
+
+        ParseGop(*c2Gop, &syncInterval, &iInterval, &maxBframes);
+        if (syncInterval > 0) {
+            c2_info("updating IDR interval: %d -> %d", idrInterval, syncInterval);
+            idrInterval = syncInterval;
+        }
+    }
+
+    c2_info("setupFrameRate: framerate %.2f gop %d", frameRate, idrInterval);
+
+    gop = (idrInterval  < 8640000 &&  idrInterval > 1) ? idrInterval : 30;
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:gop", gop);
+
+    /* fix input / output frame rate */
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_in_flex", 0);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_in_num", frameRate);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_in_denorm", 1);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_out_flex", 0);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_out_num", frameRate);
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_out_denorm", 1);
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::setupBitRate() {
+    uint32_t bitrate = 0;
+    uint32_t bitrateMode = 0;
+
+    IntfImpl::Lock lock = mIntf->lock();
+
+    mBitrate = mIntf->getBitrate_l();
+    mBitrateMode = mIntf->getBitrateMode_l();
+
+    bitrate = mBitrate->value;
+    bitrateMode = mBitrateMode->value;
+
+    c2_info("setupBitRate: mode %d bitrate %d", bitrateMode, bitrate);
+
+    mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_target", bitrate);
+    switch (bitrateMode) {
+    case C2Config::BITRATE_CONST_SKIP_ALLOWED:
+    case C2Config::BITRATE_CONST: {
+        /* CBR mode has narrow bound */
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", bitrate * 17 / 16);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", bitrate * 15 / 16);
+    } break;
+    case C2Config::BITRATE_IGNORE:[[fallthrough]];
+    case C2Config::BITRATE_VARIABLE_SKIP_ALLOWED:
+    case C2Config::BITRATE_VARIABLE: {
+        /* VBR mode has wide bound */
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_VBR);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", bitrate * 17 / 16);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", bitrate * 1 / 16);
+    } break;
+    default: {
+        /* default use CBR mode */
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", bitrate * 17 / 16);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", bitrate * 15 / 16);
+    } break;
+    }
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::setupProfileParams() {
+    int32_t profile, level;
+
+    IntfImpl::Lock lock = mIntf->lock();
+
+    profile = mIntf->getProfile_l(mCodingType);
+    level = mIntf->getLevel_l(mCodingType);
+
+    c2_info("setupProfileParams: profile %d level %d", profile, level);
+
+    switch (mCodingType) {
+    case MPP_VIDEO_CodingAVC : {
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:profile", profile);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:level", level);
+    } break;
+    case MPP_VIDEO_CodingHEVC : {
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:profile", profile);
+        mpp_enc_cfg_set_s32(mEncCfg, "h265:level", level);
+    } break;
+    default : {
+        c2_err("setupProfileParams: unsupport coding type %d", mCodingType);
+    } break;
+    }
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::setupQp() {
+    int32_t defaultIMin = 0, defaultIMax = 0;
+    int32_t defaultPMin = 0, defaultPMax = 0;
+    int32_t qpInit = 0;
+
+    if (mCodingType == MPP_VIDEO_CodingVP8) {
+        defaultIMin = defaultPMin = 0;
+        defaultIMax = defaultPMax = 127;
+        qpInit = 40;
+    } else {
+        /* the quality of h264/265 range from 10~51 */
+        defaultIMin = defaultPMin = 10;
+        defaultIMax = 51;
+        // TODO: CTS testEncoderQualityAVCCBR 49
+        defaultPMax = 49;
+        qpInit = 26;
+    }
+
+    int32_t iMin = defaultIMin, iMax = defaultIMax;
+    int32_t pMin = defaultPMin, pMax = defaultPMax;
+
+    IntfImpl::Lock lock = mIntf->lock();
+
+    std::shared_ptr<C2StreamPictureQuantizationTuning::output> qp =
+            mIntf->getPictureQuantization_l();
+
+    for (size_t i = 0; i < qp->flexCount(); ++i) {
+        const C2PictureQuantizationStruct &layer = qp->m.values[i];
+
+        if (layer.type_ == C2Config::picture_type_t(I_FRAME)) {
+            iMax = layer.max;
+            iMin = layer.min;
+            c2_info("PictureQuanlitySetter: iMin %d iMax %d", iMin, iMax);
+        } else if (layer.type_ == C2Config::picture_type_t(P_FRAME)) {
+            pMax = layer.max;
+            pMin = layer.min;
+            c2_info("PictureQuanlitySetter: pMin %d pMax %d", pMin, pMax);
+        }
+    }
+
+    iMax = std::clamp(iMax, defaultIMin, defaultIMax);
+    iMin = std::clamp(iMin, defaultIMin, defaultIMax);
+    pMax = std::clamp(pMax, defaultPMin, defaultPMax);
+    pMin = std::clamp(pMin, defaultPMin, defaultPMax);
+
+    if (qpInit > iMax || qpInit < iMin) {
+        qpInit = iMin;
+    }
+
+    c2_info("setupQp: qpInit %d i %d-%d p %d-%d", qpInit, iMin, iMax, pMin, pMax);
+
+    switch (mCodingType) {
+    case MPP_VIDEO_CodingAVC:
+    case MPP_VIDEO_CodingHEVC: {
+        /*
+         * disable mb_rc for vepu, this cfg does not apply to rkvenc.
+         * since the vepu has pool performance, mb_rc will cause mosaic.
+         */
+        mpp_enc_cfg_set_s32(mEncCfg, "hw:mb_rc_disable", 1);
+
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_min", pMin);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_max", pMax);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_min_i", iMin);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_max_i", iMax);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_init", qpInit);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_ip", 2);
+    } break;
+    case MPP_VIDEO_CodingVP8: {
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_min", pMin);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_max", pMax);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_min_i", iMin);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_max_i", iMax);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_init", qpInit);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:qp_ip", 6);
+    } break;
+    default: {
+        c2_err("setupQp: unsupport coding type %d", mCodingType);
+        break;
+    }
+    }
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::setupVuiParams() {
     ColorAspects sfAspects;
     int32_t primaries, transfer, matrixCoeffs;
     bool range;
 
-    if (!C2Mapper::map(mColorAspects->primaries, &sfAspects.mPrimaries)) {
+    IntfImpl::Lock lock = mIntf->lock();
+
+    std::shared_ptr<C2StreamColorAspectsInfo::output> colorAspects
+            = mIntf->getCodedColorAspects_l();
+
+    if (!C2Mapper::map(colorAspects->primaries, &sfAspects.mPrimaries)) {
         sfAspects.mPrimaries = android::ColorAspects::PrimariesUnspecified;
     }
-    if (!C2Mapper::map(mColorAspects->range, &sfAspects.mRange)) {
+    if (!C2Mapper::map(colorAspects->range, &sfAspects.mRange)) {
         sfAspects.mRange = android::ColorAspects::RangeUnspecified;
     }
-    if (!C2Mapper::map(mColorAspects->matrix, &sfAspects.mMatrixCoeffs)) {
+    if (!C2Mapper::map(colorAspects->matrix, &sfAspects.mMatrixCoeffs)) {
         sfAspects.mMatrixCoeffs = android::ColorAspects::MatrixUnspecified;
     }
-    if (!C2Mapper::map(mColorAspects->transfer, &sfAspects.mTransfer)) {
+    if (!C2Mapper::map(colorAspects->transfer, &sfAspects.mTransfer)) {
         sfAspects.mTransfer = android::ColorAspects::TransferUnspecified;
     }
 
@@ -741,8 +993,6 @@ c2_status_t C2RKMpiEnc::setVuiParams() {
 c2_status_t C2RKMpiEnc::initEncParams() {
     c2_status_t ret = C2_OK;
     int err = 0;
-    int32_t gop = 30;
-    MppEncSeiMode seiMode = MPP_ENC_SEI_MODE_ONE_FRAME;
 
     err = mpp_enc_cfg_init(&mEncCfg);
     if (err) {
@@ -751,150 +1001,38 @@ c2_status_t C2RKMpiEnc::initEncParams() {
         goto __RETURN;
     }
 
-    /* default stride of encoder config */
-    mHorStride = C2_ALIGN(mSize->width, 16);
-    mVerStride = C2_ALIGN(mSize->height, 8);
+    /* Video control Set Base Codec */
+    setupBaseCodec();
 
-    mpp_enc_cfg_set_s32(mEncCfg, "prep:width", mSize->width);
-    mpp_enc_cfg_set_s32(mEncCfg, "prep:height", mSize->height);
-    mpp_enc_cfg_set_s32(mEncCfg, "prep:hor_stride", mHorStride);
-    mpp_enc_cfg_set_s32(mEncCfg, "prep:ver_stride", mVerStride);
-    mpp_enc_cfg_set_s32(mEncCfg, "prep:format", MPP_FMT_YUV420SP);
-    mpp_enc_cfg_set_s32(mEncCfg, "prep:rotation", MPP_ENC_ROT_0);
+    /* Video control Set FrameRates and gop */
+    setupFrameRate();
 
-    /* setup bitrate for different rc_mode */
-    mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_target", mBitrate->value);
-    switch (mBitrateMode->value) {
-        case C2Config::BITRATE_CONST:
-            /* CBR mode has narrow bound */
-            mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
-            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", mBitrate->value * 17 / 16);
-            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", mBitrate->value * 15 / 16);
-            break;
-        case C2Config::BITRATE_IGNORE:[[fallthrough]];
-        case C2Config::BITRATE_VARIABLE:
-            /* VBR mode has wide bound */
-            mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_VBR);
-            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", mBitrate->value * 17 / 16);
-            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", mBitrate->value * 1 / 16);
-            break;
-        default:
-            /* default use CBR mode */
-            mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
-            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", mBitrate->value * 17 / 16);
-            mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", mBitrate->value * 15 / 16);
-            break;
-    }
+    /* Video control Set Bitrate */
+    setupBitRate();
 
-    /* fix input / output frame rate */
-    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_in_flex", 0);
-    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_in_num", mFrameRate->value);
-    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_in_denorm", 1);
-    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_out_flex", 0);
-    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_out_num", mFrameRate->value);
-    mpp_enc_cfg_set_s32(mEncCfg, "rc:fps_out_denorm", 1);
+    /* Video control Set Profile params */
+    setupProfileParams();
 
-    if (mGop && mGop->flexCount() > 0) {
-        uint32_t syncInterval = 30;
-        uint32_t iInterval = 30;
-        uint32_t maxBframes = 0;
-        ParseGop(*mGop, &syncInterval, &iInterval, &maxBframes);
-        if (syncInterval > 0) {
-            c2_info("Updating IDR interval: old %u new %u", mIDRInterval, syncInterval);
-            mIDRInterval = syncInterval;
-        }
-        if (iInterval > 0) {
-            c2_info("Updating I interval: old %u new %u", mIInterval, iInterval);
-            mIInterval = iInterval;
-        }
-    }
-
-    gop = (mIDRInterval  < 8640000 &&  mIDRInterval > 1) ? mIDRInterval : gop;
-    mpp_enc_cfg_set_s32(mEncCfg, "rc:gop", gop);
-    mpp_enc_cfg_set_s32(mEncCfg, "codec:type", mCodingType);
-
-    switch (mCodingType) {
-    case MPP_VIDEO_CodingAVC : {
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:profile", mEncProfile);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:level", mEncLevel);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_en", 1);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_idc", 0);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:trans8x8", 1);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_init", 26);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_min", 10);
-        /* testEncoderQualityAVCCBR 49 */
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_max", 49);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_min_i", 10);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_max_i", 51);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_step", 4);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:qp_delta_ip", 3);
-        /* disable mb_rc for vepu, this cfg does not apply to rkvenc */
-        mpp_enc_cfg_set_s32(mEncCfg, "hw:mb_rc_disable", 1);
-    } break;
-    case MPP_VIDEO_CodingMJPEG : {
-        mpp_enc_cfg_set_s32(mEncCfg, "jpeg:quant", 10);
-        mpp_enc_cfg_set_s32(mEncCfg, "jpeg:change", MPP_ENC_JPEG_CFG_CHANGE_QP);
-    } break;
-    case MPP_VIDEO_CodingVP8 : {
-        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_init", -1);
-        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_min", 0);
-        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_max", 127);
-        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_min_i", 0);
-        mpp_enc_cfg_set_s32(mEncCfg, "vp8:qp_max_i", 127);
-    } break;
-    case MPP_VIDEO_CodingHEVC : {
-        mpp_enc_cfg_set_s32(mEncCfg, "h265:profile", mEncProfile);
-        mpp_enc_cfg_set_s32(mEncCfg, "h265:level", mEncLevel);
-        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_init", 26);
-        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_min", 10);
-        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_max", 49);
-        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_min_i", 15);
-        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_max_i", 51);
-        mpp_enc_cfg_set_s32(mEncCfg, "h265:qp_delta_ip", 4);
-    } break;
-    default : {
-        c2_err("support encoder coding type %d\n", mCodingType);
-    } break;
-    }
+    /* Video control Set QP */
+    setupQp();
 
     /* Video control Set VUI params */
-    setVuiParams();
-
-    c2_info("encode params init settings:\n"
-            "width = %d\n"
-            "height = %d\n"
-            "coding = %x\n"
-            "bitrateMode = %d\n"
-            "bitRate = %d\n"
-            "framerate = %f\n"
-            "IDRInterval = %d\n"
-            "gop = %d,\n"
-            "profile = %d,\n"
-            "level = %d,\n",
-            mSize->width,
-            mSize->height,
-            mCodingType,
-            mBitrateMode->value,
-            mBitrate->value,
-            mFrameRate->value,
-            mIDRInterval,
-            gop,
-            mEncProfile,
-            mEncLevel);
+    setupVuiParams();
 
     err = mMppMpi->control(mMppCtx, MPP_ENC_SET_CFG, mEncCfg);
     if (err) {
         c2_err("failed to setup codec cfg, ret %d", err);
         ret = C2_CORRUPTED;
         goto __RETURN;
-    }
-
-    /* optional */
-    err = mMppMpi->control(mMppCtx, MPP_ENC_SET_SEI_CFG, &seiMode);
-    if (err) {
-        c2_err("failed to setup sei cfg, ret %d", err);
-        ret = C2_CORRUPTED;
-        goto __RETURN;
+    } else {
+        /* optional */
+        MppEncSeiMode seiMode = MPP_ENC_SEI_MODE_ONE_FRAME;
+        err = mMppMpi->control(mMppCtx, MPP_ENC_SET_SEI_CFG, &seiMode);
+        if (err) {
+            c2_err("failed to setup sei cfg, ret %d", err);
+            ret = C2_CORRUPTED;
+            goto __RETURN;
+        }
     }
 
 __RETURN:
@@ -913,18 +1051,7 @@ c2_status_t C2RKMpiEnc::initEncoder() {
         mSize = mIntf->getSize_l();
         mBitrateMode = mIntf->getBitrateMode_l();
         mBitrate = mIntf->getBitrate_l();
-        mFrameRate = mIntf->getFrameRate_l();
-        mEncProfile = mIntf->getProfile_l(mCodingType);
-        mEncLevel = mIntf->getLevel_l(mCodingType);
-        mIDRInterval = mIntf->getSyncFramePeriod_l();
-        mGop = mIntf->getGop_l();
         mRequestSync = mIntf->getRequestSync_l();
-        mColorAspects = mIntf->getCodedColorAspects_l();
-    }
-
-    if (mFrameRate->value == 1) {
-        // default frameRate
-        mFrameRate->value = 30;
     }
 
     /*
@@ -960,7 +1087,7 @@ c2_status_t C2RKMpiEnc::initEncoder() {
 
     c2_info("alloc temporary DmaMem fd %d size %d", mDmaMem->fd, mDmaMem->size);
 
-    //create mpp and init mpp
+    // create mpp and init mpp
     err = mpp_create(&mMppCtx, &mMppMpi);
     if (err) {
         c2_err("failed to mpp_create, ret %d", err);
@@ -1168,10 +1295,12 @@ void C2RKMpiEnc::process(
 
     {
         // handle dynamic config parameters
+        // TODO set bitrate dynamically
         IntfImpl::Lock lock = mIntf->lock();
         std::shared_ptr<C2StreamBitrateInfo::output> bitrate = mIntf->getBitrate_l();
         lock.unlock();
         if (bitrate != mBitrate) {
+            c2_info("new bitrate requeset, value %d", bitrate->value);
             mBitrate = bitrate;
         }
     }
@@ -1328,7 +1457,7 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
             break;
         }
         case C2PlanarLayout::TYPE_YUV:
-            c2_trace("%s %d input yuv", __func__,__LINE__);
+            c2_trace("%s %d input yuv", __func__, __LINE__);
 
             if (!IsYUV420(*input)) {
                 c2_err("input is not YUV420");

@@ -68,10 +68,6 @@ private:
     bool    mSignalledError;
     int32_t mHorStride;
     int32_t mVerStride;
-    int32_t mEncProfile;
-    int32_t mEncLevel;
-    int32_t mIInterval;
-    int32_t mIDRInterval;
 
     /* dump file for debug */
     FILE *mInFile;
@@ -80,15 +76,18 @@ private:
     // configurations used by component in process
     // (TODO: keep this in intf but make them internal only)
     std::shared_ptr<C2StreamPictureSizeInfo::input> mSize;
-    std::shared_ptr<C2StreamFrameRateInfo::output> mFrameRate;
     std::shared_ptr<C2StreamBitrateInfo::output> mBitrate;
     std::shared_ptr<C2StreamBitrateModeTuning::output> mBitrateMode;
-    std::shared_ptr<C2StreamGopTuning::output> mGop;
     std::shared_ptr<C2StreamRequestSyncFrameTuning::output> mRequestSync;
-    std::shared_ptr<C2StreamColorAspectsInfo::output> mColorAspects;
 
 private:
-    c2_status_t setVuiParams();
+    c2_status_t setupBaseCodec();
+    c2_status_t setupFrameRate();
+    c2_status_t setupBitRate();
+    c2_status_t setupProfileParams();
+    c2_status_t setupQp();
+    c2_status_t setupVuiParams();
+
     c2_status_t initEncParams();
     c2_status_t initEncoder();
     c2_status_t releaseEncoder();
