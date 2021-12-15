@@ -87,6 +87,7 @@ private:
     c2_status_t setupProfileParams();
     c2_status_t setupQp();
     c2_status_t setupVuiParams();
+    c2_status_t setupTemporalLayers();
 
     c2_status_t initEncParams();
     c2_status_t initEncoder();

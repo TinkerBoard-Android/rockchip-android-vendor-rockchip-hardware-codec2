@@ -294,6 +294,17 @@ public:
                 })
                 .withSetter(CodedColorAspectsSetter, mColorAspects)
                 .build());
+
+        addParameter(
+            DefineParam(mLayering, C2_PARAMKEY_TEMPORAL_LAYERING)
+                .withDefault(C2StreamTemporalLayeringTuning::output::AllocShared(0u, 0, 0, 0))
+                .withFields({
+                    C2F(mLayering, m.layerCount).inRange(0, 4),
+                    C2F(mLayering, m.bLayerCount).inRange(0, 0),
+                    C2F(mLayering, m.bitrateRatios).inRange(0., 1.)
+                })
+                .withSetter(LayeringSetter)
+                .build());
     }
 
     static C2R InputDelaySetter(
@@ -607,6 +618,15 @@ public:
         return C2R::Ok();
     }
 
+    static C2R LayeringSetter(bool mayBlock,
+                              C2P<C2StreamTemporalLayeringTuning::output>& me) {
+       (void)mayBlock;
+       (void)me;
+       c2_info("%s %d in", __FUNCTION__, __LINE__);
+
+       return C2R::Ok();
+    }
+
     // unsafe getters
     std::shared_ptr<C2StreamPictureSizeInfo::input> getSize_l() const
     { return mSize; }
@@ -626,6 +646,8 @@ public:
     { return mPictureQuantization; }
     std::shared_ptr<C2StreamColorAspectsInfo::output> getCodedColorAspects_l() const
     { return mCodedColorAspects; }
+    std::shared_ptr<C2StreamTemporalLayeringTuning::output> getTemporalLayers_l() const
+    { return mLayering; }
 
 private:
     std::shared_ptr<C2StreamUsageTuning::input> mUsage;
@@ -641,6 +663,7 @@ private:
     std::shared_ptr<C2StreamBitrateModeTuning::output> mBitrateMode;
     std::shared_ptr<C2StreamColorAspectsInfo::input> mColorAspects;
     std::shared_ptr<C2StreamColorAspectsInfo::output> mCodedColorAspects;
+    std::shared_ptr<C2StreamTemporalLayeringTuning::output> mLayering;
 };
 
 C2RKMpiEnc::C2RKMpiEnc(
@@ -990,6 +1013,218 @@ c2_status_t C2RKMpiEnc::setupVuiParams() {
     return C2_OK;
 }
 
+c2_status_t C2RKMpiEnc::setupTemporalLayers() {
+    size_t temporalLayers = 0;
+
+    IntfImpl::Lock lock = mIntf->lock();
+
+    std::shared_ptr<C2StreamTemporalLayeringTuning::output> layering =
+            mIntf->getTemporalLayers_l();
+
+    temporalLayers = layering->m.layerCount;
+    if (temporalLayers == 0) {
+        return C2_OK;
+    }
+
+    if (temporalLayers < 2 || temporalLayers > 4) {
+        c2_warn("only support tsvc layer 2 ~ 4(%zu); ignored.", temporalLayers);
+        return C2_OK;
+    }
+
+    /*
+     * NOTE:
+     * 1. not support set bLayerCount and bitrateRatios yet.
+     *    - layering->m.bLayerCount
+     *    - layering->m.bitrateRatios
+     * 2. only support tsvc layer 2 ~ 4.
+     */
+
+    int ret = 0;
+    MppEncRefCfg ref;
+    MppEncRefLtFrmCfg ltRef[4];
+    MppEncRefStFrmCfg stRef[16];
+    RK_S32 ltCnt = 0;
+    RK_S32 stCnt = 0;
+
+    memset(&ltRef, 0, sizeof(ltRef));
+    memset(&stRef, 0, sizeof(stRef));
+
+    mpp_enc_ref_cfg_init(&ref);
+
+    c2_info("setupTemporalLayers: layers %zu", temporalLayers);
+
+    switch (temporalLayers) {
+    case 4: {
+        // tsvc4
+        //      /-> P1      /-> P3        /-> P5      /-> P7
+        //     /           /             /           /
+        //    //--------> P2            //--------> P6
+        //   //                        //
+        //  ///---------------------> P4
+        // ///
+        // P0 ------------------------------------------------> P8
+        ltCnt = 1;
+
+        /* set 8 frame lt-ref gap */
+        ltRef[0].lt_idx        = 0;
+        ltRef[0].temporal_id   = 0;
+        ltRef[0].ref_mode      = REF_TO_PREV_LT_REF;
+        ltRef[0].lt_gap        = 8;
+        ltRef[0].lt_delay      = 0;
+
+        stCnt = 9;
+        /* set tsvc4 st-ref struct */
+        /* st 0 layer 0 - ref */
+        stRef[0].is_non_ref    = 0;
+        stRef[0].temporal_id   = 0;
+        stRef[0].ref_mode      = REF_TO_TEMPORAL_LAYER;
+        stRef[0].ref_arg       = 0;
+        stRef[0].repeat        = 0;
+        /* st 1 layer 3 - non-ref */
+        stRef[1].is_non_ref    = 1;
+        stRef[1].temporal_id   = 3;
+        stRef[1].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[1].ref_arg       = 0;
+        stRef[1].repeat        = 0;
+        /* st 2 layer 2 - ref */
+        stRef[2].is_non_ref    = 0;
+        stRef[2].temporal_id   = 2;
+        stRef[2].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[2].ref_arg       = 0;
+        stRef[2].repeat        = 0;
+        /* st 3 layer 3 - non-ref */
+        stRef[3].is_non_ref    = 1;
+        stRef[3].temporal_id   = 3;
+        stRef[3].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[3].ref_arg       = 0;
+        stRef[3].repeat        = 0;
+        /* st 4 layer 1 - ref */
+        stRef[4].is_non_ref    = 0;
+        stRef[4].temporal_id   = 1;
+        stRef[4].ref_mode      = REF_TO_PREV_LT_REF;
+        stRef[4].ref_arg       = 0;
+        stRef[4].repeat        = 0;
+        /* st 5 layer 3 - non-ref */
+        stRef[5].is_non_ref    = 1;
+        stRef[5].temporal_id   = 3;
+        stRef[5].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[5].ref_arg       = 0;
+        stRef[5].repeat        = 0;
+        /* st 6 layer 2 - ref */
+        stRef[6].is_non_ref    = 0;
+        stRef[6].temporal_id   = 2;
+        stRef[6].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[6].ref_arg       = 0;
+        stRef[6].repeat        = 0;
+        /* st 7 layer 3 - non-ref */
+        stRef[7].is_non_ref    = 1;
+        stRef[7].temporal_id   = 3;
+        stRef[7].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[7].ref_arg       = 0;
+        stRef[7].repeat        = 0;
+        /* st 8 layer 0 - ref */
+        stRef[8].is_non_ref    = 0;
+        stRef[8].temporal_id   = 0;
+        stRef[8].ref_mode      = REF_TO_TEMPORAL_LAYER;
+        stRef[8].ref_arg       = 0;
+        stRef[8].repeat        = 0;
+    } break;
+    case 3: {
+        // tsvc3
+        //     /-> P1      /-> P3
+        //    /           /
+        //   //--------> P2
+        //  //
+        // P0/---------------------> P4
+        ltCnt = 0;
+
+        stCnt = 5;
+        /* set tsvc4 st-ref struct */
+        /* st 0 layer 0 - ref */
+        stRef[0].is_non_ref    = 0;
+        stRef[0].temporal_id   = 0;
+        stRef[0].ref_mode      = REF_TO_TEMPORAL_LAYER;
+        stRef[0].ref_arg       = 0;
+        stRef[0].repeat        = 0;
+        /* st 1 layer 2 - non-ref */
+        stRef[1].is_non_ref    = 1;
+        stRef[1].temporal_id   = 2;
+        stRef[1].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[1].ref_arg       = 0;
+        stRef[1].repeat        = 0;
+        /* st 2 layer 1 - ref */
+        stRef[2].is_non_ref    = 0;
+        stRef[2].temporal_id   = 1;
+        stRef[2].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[2].ref_arg       = 0;
+        stRef[2].repeat        = 0;
+        /* st 3 layer 2 - non-ref */
+        stRef[3].is_non_ref    = 1;
+        stRef[3].temporal_id   = 2;
+        stRef[3].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[3].ref_arg       = 0;
+        stRef[3].repeat        = 0;
+        /* st 4 layer 0 - ref */
+        stRef[4].is_non_ref    = 0;
+        stRef[4].temporal_id   = 0;
+        stRef[4].ref_mode      = REF_TO_TEMPORAL_LAYER;
+        stRef[4].ref_arg       = 0;
+        stRef[4].repeat        = 0;
+    } break;
+    case 2: {
+        // tsvc2
+        //   /-> P1
+        //  /
+        // P0--------> P2
+        ltCnt = 0;
+
+        stCnt = 3;
+        /* set tsvc4 st-ref struct */
+        /* st 0 layer 0 - ref */
+        stRef[0].is_non_ref    = 0;
+        stRef[0].temporal_id   = 0;
+        stRef[0].ref_mode      = REF_TO_TEMPORAL_LAYER;
+        stRef[0].ref_arg       = 0;
+        stRef[0].repeat        = 0;
+        /* st 1 layer 2 - non-ref */
+        stRef[1].is_non_ref    = 1;
+        stRef[1].temporal_id   = 1;
+        stRef[1].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[1].ref_arg       = 0;
+        stRef[1].repeat        = 0;
+        /* st 2 layer 1 - ref */
+        stRef[2].is_non_ref    = 0;
+        stRef[2].temporal_id   = 0;
+        stRef[2].ref_mode      = REF_TO_PREV_REF_FRM;
+        stRef[2].ref_arg       = 0;
+        stRef[2].repeat        = 0;
+    } break;
+    default : {
+    } break;
+    }
+
+    if (ltCnt || stCnt) {
+        mpp_enc_ref_cfg_set_cfg_cnt(ref, ltCnt, stCnt);
+
+        if (ltCnt)
+            mpp_enc_ref_cfg_add_lt_cfg(ref, ltCnt, ltRef);
+
+        if (stCnt)
+            mpp_enc_ref_cfg_add_st_cfg(ref, stCnt, stRef);
+
+        /* check and get dpb size */
+        mpp_enc_ref_cfg_check(ref);
+    }
+
+    ret = mMppMpi->control(mMppCtx, MPP_ENC_SET_REF_CFG, ref);
+    if (ret) {
+        c2_err("setupTemporalLayers: failed to set ref cfg ret %d", ret);
+        return C2_CORRUPTED;
+    }
+
+    return C2_OK;
+}
+
 c2_status_t C2RKMpiEnc::initEncParams() {
     c2_status_t ret = C2_OK;
     int err = 0;
@@ -1018,6 +1253,9 @@ c2_status_t C2RKMpiEnc::initEncParams() {
 
     /* Video control Set VUI params */
     setupVuiParams();
+
+    /* Video control Set Temporal Layers */
+    setupTemporalLayers();
 
     err = mMppMpi->control(mMppCtx, MPP_ENC_SET_CFG, mEncCfg);
     if (err) {
