@@ -20,7 +20,7 @@
 // use MediaDefs here vs. MediaCodecConstants as this is not MediaCodec specific/dependent
 #include <media/stagefright/foundation/MediaDefs.h>
 
-#include <C2RKInterface.h>
+#include "C2RKInterface.h"
 #include "C2RKLog.h"
 
 namespace android {

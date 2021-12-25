@@ -20,11 +20,10 @@
 #include <list>
 #include <unordered_map>
 
-#include <C2Component.h>
-
 #include <media/stagefright/foundation/AHandler.h>
 #include <media/stagefright/foundation/ALooper.h>
 #include <media/stagefright/foundation/Mutexed.h>
+#include "C2Component.h"
 
 namespace android {
 

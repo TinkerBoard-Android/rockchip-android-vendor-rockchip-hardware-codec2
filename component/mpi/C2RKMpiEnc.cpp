@@ -33,7 +33,7 @@
 
 #include "hardware/hardware_rockchip.h"
 #include "C2RKMpiEnc.h"
-#include "C2RKMediaDefs.h"
+#include "C2RKMediaUtils.h"
 #include "C2RKRgaDef.h"
 #include "mpp/h264_syntax.h"
 #include "mpp/h265_syntax.h"
@@ -359,7 +359,7 @@ public:
     static C2R GopSetter(bool mayBlock, C2P<C2StreamGopTuning::output> &me) {
         (void)mayBlock;
         (void)me;
-        c2_info("%s %d in", __FUNCTION__, __LINE__);
+        c2_info_f("in");
         return C2R::Ok();
     }
 
@@ -367,8 +367,7 @@ public:
                                          C2P<C2StreamPictureQuantizationTuning::output> &me) {
         (void)mayBlock;
         (void)me;
-        c2_info("%s %d in", __FUNCTION__, __LINE__);
-
+        c2_info_f("in");
         return C2R::Ok();
     }
 
@@ -543,7 +542,7 @@ public:
             } else if (type == MPP_VIDEO_CodingHEVC) {
                 return MPP_PROFILE_HEVC_MAIN;
             } else {
-                c2_err(" %s unsupport type:%d", __func__, type);
+                c2_err_f("unsupport type:%d", type);
                 return 0;
             }
         }
@@ -586,7 +585,7 @@ public:
         } else if (type == MPP_VIDEO_CodingHEVC) {
             return 123;
         } else {
-            c2_err("%s unsupport type:%d", __func__, type);
+            c2_err_f("unsupport type:%d", type);
             return 0;
         }
     }
@@ -622,8 +621,7 @@ public:
                               C2P<C2StreamTemporalLayeringTuning::output>& me) {
        (void)mayBlock;
        (void)me;
-       c2_info("%s %d in", __FUNCTION__, __LINE__);
-
+       c2_info_f("in");
        return C2R::Ok();
     }
 
@@ -686,8 +684,7 @@ C2RKMpiEnc::C2RKMpiEnc(
       mOutFile(nullptr) {
     c2_info("version: %s", C2_GIT_BUILD_VERSION);
 
-    int err = getCodingTypeFromComponentName(name, &mCodingType);
-    if (err) {
+    if (!C2RKMediaUtils::getCodingTypeFromComponentName(name, &mCodingType)) {
         c2_err("failed to get MppCodingType from component %s", name);
     }
 
@@ -722,32 +719,32 @@ C2RKMpiEnc::C2RKMpiEnc(
 }
 
 C2RKMpiEnc::~C2RKMpiEnc() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     onRelease();
 }
 
 c2_status_t C2RKMpiEnc::onInit() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     return C2_OK;
 }
 
 c2_status_t C2RKMpiEnc::onStop() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     return C2_OK;
 }
 
 void C2RKMpiEnc::onReset() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     releaseEncoder();
 }
 
 void C2RKMpiEnc::onRelease() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     releaseEncoder();
 }
 
 c2_status_t C2RKMpiEnc::onFlush_sm() {
-    c2_info("%s in", __func__);
+    c2_info_f("in");
     return C2_OK;
 }
 
@@ -1282,7 +1279,7 @@ c2_status_t C2RKMpiEnc::initEncoder() {
     int err = 0;
     MppPollType timeout = MPP_POLL_BLOCK;
 
-    c2_info("%s %d in", __FUNCTION__, __LINE__);
+    c2_info_f("in");
 
     {
         IntfImpl::Lock lock = mIntf->lock();
@@ -1403,7 +1400,7 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
 static void fillEmptyWork(const std::unique_ptr<C2Work>& work) {
     uint32_t flags = 0;
 
-    c2_trace("%s in", __func__);
+    c2_trace_f("in");
 
     if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
         flags |= C2FrameData::FLAG_END_OF_STREAM;
@@ -1901,7 +1898,7 @@ c2_status_t C2RKMpiEnc::drainInternal(
         uint32_t drainMode,
         const std::shared_ptr<C2BlockPool> &pool,
         const std::unique_ptr<C2Work> &work) {
-    c2_trace("%s %d in", __FUNCTION__, __LINE__);
+    c2_trace_f("in");
 
     if (drainMode == NO_DRAIN) {
         c2_warn("drain with NO_DRAIN: no-op");
@@ -1937,16 +1934,13 @@ public:
             : mHelper(std::static_pointer_cast<C2ReflectorHelper>(
                   GetCodec2PlatformComponentStore()->getParamReflector())),
               mComponentName(componentName) {
-        int err = getMimeFromComponentName(componentName, &mMime);
-        if (err) {
+        if (!C2RKMediaUtils::getMimeFromComponentName(componentName, &mMime)) {
             c2_err("failed to get mime from component %s", componentName.c_str());
         }
-        err = getDomainFromComponentName(componentName, &mDomain);
-        if (err) {
+        if (!C2RKMediaUtils::getDomainFromComponentName(componentName, &mDomain)) {
             c2_err("failed to get domain from component %s", componentName.c_str());
         }
-        err = getKindFromComponentName(componentName, &mKind);
-        if (err) {
+        if (!C2RKMediaUtils::getKindFromComponentName(componentName, &mKind)) {
             c2_err("failed to get kind from component %s", componentName.c_str());
         }
     }
@@ -1955,7 +1949,7 @@ public:
             c2_node_id_t id,
             std::shared_ptr<C2Component>* const component,
             std::function<void(C2Component*)> deleter) override {
-        c2_trace("%s %d in", __FUNCTION__, __LINE__);
+        c2_trace_f("in");
         *component = std::shared_ptr<C2Component>(
                 new C2RKMpiEnc(
                         mComponentName.c_str(),
@@ -1992,7 +1986,7 @@ private:
 };
 
 C2ComponentFactory* CreateRKMpiEncFactory(std::string componentName) {
-    c2_trace("in %s", __func__);
+    c2_trace_f("in");
     return new ::android::C2RKMpiEncFactory(componentName);
 }
 

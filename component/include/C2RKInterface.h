@@ -17,9 +17,9 @@
 #ifndef ANDROID_RK_C2_INTERFACE_H_
 #define ANDROID_RK_C2_INTERFACE_H_
 
-#include <C2Component.h>
 #include <C2Config.h>
 #include <util/C2InterfaceHelper.h>
+#include "C2Component.h"
 
 namespace android {
 

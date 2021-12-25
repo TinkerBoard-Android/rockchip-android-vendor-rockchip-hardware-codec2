@@ -20,6 +20,7 @@ cc_library_shared {
     static_libs: [
         "libcodec2_rk_base",
         "libcodec2_rk_mpi",
+        "libcodec2_rk_osal",
     ],
 
     shared_libs: [
@@ -35,6 +36,10 @@ cc_library_shared {
 
     export_shared_lib_headers: [
         "libsfplugin_ccodec_utils",
+    ],
+
+    include_dirs: [
+        "vendor/rockchip/hardware/interfaces/codec2/osal/include",
     ],
 
     sanitize: {

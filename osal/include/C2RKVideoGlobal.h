@@ -27,9 +27,6 @@ extern "C" {
 #define VIDEO_DBG_RECORD_IN                  0x01000000
 #define VIDEO_DBG_RECORD_OUT                 0x02000000
 
-C2_U32 c2_vdec_debug = 0;
-C2_U32 c2_venc_debug = 0;
-
 /** Get time */
 #define GETTIME(a, b) gettimeofday(a, b)
 

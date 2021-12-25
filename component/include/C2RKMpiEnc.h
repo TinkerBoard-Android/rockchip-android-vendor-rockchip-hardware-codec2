@@ -18,8 +18,7 @@
 #define ANDROID_C2_RK_MPI_ENC_H__
 
 #include <stdio.h>
-#include <C2RKComponent.h>
-
+#include "C2RKComponent.h"
 #include "mpp/rk_mpi.h"
 
 namespace android {

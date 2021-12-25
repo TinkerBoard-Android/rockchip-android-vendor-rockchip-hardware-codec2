@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 
-#define LOG_NDEBUG 0
-#define LOG_TAG "C2RKComponentStore"
-
-#include <utils/Log.h>
+#undef  ROCKCHIP_LOG_TAG
+#define ROCKCHIP_LOG_TAG    "C2RKComponentStore"
 
 #include <C2AllocatorGralloc.h>
 #include <C2AllocatorIon.h>
@@ -30,9 +28,12 @@
 #include <C2PlatformSupport.h>
 #include <cutils/properties.h>
 #include <util/C2InterfaceHelper.h>
-
+#include <utils/Log.h>
 #include <dlfcn.h>
 #include <unistd.h> // getpagesize
+
+#include "C2RKMediaUtils.h"
+#include "C2RKLog.h"
 
 #include <map>
 #include <memory>
@@ -111,15 +112,15 @@ static bool using_ion(void) {
              */
             ret = (stat("/dev/dma_heap/system", &buffer) != 0);
             if (ret)
-                ALOGE("debug.c2.use_dmabufheaps set, but no system heap. Ignoring override!");
+                c2_err("debug.c2.use_dmabufheaps set, but no system heap. Ignoring override!");
             else
-                ALOGD("debug.c2.use_dmabufheaps set, forcing DMABUF Heaps");
+                c2_info("debug.c2.use_dmabufheaps set, forcing DMABUF Heaps");
         }
 
         if (ret)
-            ALOGD("Using ION\n");
+            c2_info("Using ION\n");
         else
-            ALOGD("Using DMABUF Heaps\n");
+            c2_info("Using DMABUF Heaps\n");
         return ret;
     }();
 
@@ -598,6 +599,7 @@ public:
     virtual c2_status_t config_sm(
             const std::vector<C2Param*> &params,
             std::vector<std::unique_ptr<C2SettingResult>> *const failures) override;
+
     C2RKComponentStore();
 
     virtual ~C2RKComponentStore() override = default;
@@ -812,7 +814,7 @@ private:
 
 c2_status_t C2RKComponentStore::ComponentModule::init(
         std::string componentName) {
-    ALOGV("%s %d in componentName: %s", __FUNCTION__, __LINE__, componentName.c_str());
+    c2_trace_f("componentName: %s", componentName.c_str());
     mLibHandle = dlopen(C2_RK_COMPONENT_PATH, RTLD_NOW|RTLD_NODELETE);
     LOG_ALWAYS_FATAL_IF(mLibHandle == nullptr,
             "could not dlopen %s: %s", C2_RK_COMPONENT_PATH, dlerror());
@@ -829,7 +831,7 @@ c2_status_t C2RKComponentStore::ComponentModule::init(
 
     mComponentFactory = createFactory(componentName);
     if (mComponentFactory == nullptr) {
-        ALOGD("could not create factory in %s", C2_RK_COMPONENT_PATH);
+        c2_info("could not create factory in %s", C2_RK_COMPONENT_PATH);
         mInit = C2_NO_MEMORY;
     } else {
         mInit = C2_OK;
@@ -842,7 +844,7 @@ c2_status_t C2RKComponentStore::ComponentModule::init(
     std::shared_ptr<C2ComponentInterface> intf;
     c2_status_t res = createInterface(0, &intf);
     if (res != C2_OK) {
-        ALOGD("failed to create interface: %d", res);
+        c2_info("failed to create interface: %d", res);
         return mInit;
     }
 
@@ -859,7 +861,7 @@ c2_status_t C2RKComponentStore::ComponentModule::init(
             traits->domain = domain.value;
         } else {
             // TODO: remove this fall-back
-            ALOGD("failed to query interface for kind and domain: %d", res);
+            c2_info("failed to query interface for kind and domain: %d", res);
 
             traits->kind =
                 (traits->name.find("encoder") != std::string::npos) ? C2Component::KIND_ENCODER :
@@ -873,16 +875,16 @@ c2_status_t C2RKComponentStore::ComponentModule::init(
         std::vector<std::unique_ptr<C2Param>> params;
         res = intf->query_vb({}, { mediaTypeIndex }, C2_MAY_BLOCK, &params);
         if (res != C2_OK) {
-            ALOGD("failed to query interface: %d", res);
+            c2_info("failed to query interface: %d", res);
             return mInit;
         }
         if (params.size() != 1u) {
-            ALOGD("failed to query interface: unexpected vector size: %zu", params.size());
+            c2_info("failed to query interface: unexpected vector size: %zu", params.size());
             return mInit;
         }
         C2PortMediaTypeSetting *mediaTypeConfig = C2PortMediaTypeSetting::From(params[0].get());
         if (mediaTypeConfig == nullptr) {
-            ALOGD("failed to query media type");
+            c2_info("failed to query media type");
             return mInit;
         }
         traits->mediaType =
@@ -919,12 +921,12 @@ c2_status_t C2RKComponentStore::ComponentModule::init(
                 // Split aliases on ','
                 // This looks simpler in plain C and even std::string would still make a copy.
                 char *aliases = ::strndup(aliasesSetting->m.value, aliasesSetting->flexCount());
-                ALOGD("'%s' has aliases: '%s'", intf->getName().c_str(), aliases);
+                c2_info("'%s' has aliases: '%s'", intf->getName().c_str(), aliases);
 
                 for (char *tok, *ptr, *str = aliases; (tok = ::strtok_r(str, ",", &ptr));
                         str = nullptr) {
                     traits->aliases.push_back(tok);
-                    ALOGD("adding alias: '%s'", tok);
+                    c2_info("adding alias: '%s'", tok);
                 }
                 free(aliases);
             }
@@ -936,12 +938,12 @@ c2_status_t C2RKComponentStore::ComponentModule::init(
 }
 
 C2RKComponentStore::ComponentModule::~ComponentModule() {
-    ALOGV("in %s", __func__);
+    c2_trace_f("in");
     if (destroyFactory && mComponentFactory) {
         destroyFactory(mComponentFactory);
     }
     if (mLibHandle) {
-        ALOGV("unloading dll");
+        c2_trace("unloading dll");
         dlclose(mLibHandle);
     }
 }
@@ -989,22 +991,19 @@ C2RKComponentStore::C2RKComponentStore()
     : mVisited(false),
       mReflector(std::make_shared<C2ReflectorHelper>()),
       mInterface(mReflector) {
-
     auto emplace = [this](const char *componentName) {
         mComponents.emplace(componentName, componentName);
     };
 
-    ALOGV("%s %d in", __FUNCTION__, __LINE__);
-    // TODO: move this also into a .so so it can be updated
-    // TODO: some devices may not support vp9
-    emplace("c2.rk.avc.decoder");
-    emplace("c2.rk.vp9.decoder");
-    emplace("c2.rk.vp8.decoder");
-    emplace("c2.rk.hevc.decoder");
-    emplace("c2.rk.mpeg2.decoder");
-    emplace("c2.rk.m4v.decoder");
-    emplace("c2.rk.avc.encoder");
-    emplace("c2.rk.hevc.encoder");
+    for (int i = 0; i < C2_RK_ARRAY_ELEMS(kComponentMapEntry); ++i) {
+        if (C2RKMediaUtils::checkHWSupport(
+                kComponentMapEntry[i].type, kComponentMapEntry[i].codingType)) {
+            c2_info("plugin %s", kComponentMapEntry[i].componentName.c_str());
+            emplace(kComponentMapEntry[i].componentName.c_str());
+        } else {
+            c2_info("%s unsupport", kComponentMapEntry[i].componentName.c_str());
+        }
+    }
 }
 
 c2_status_t C2RKComponentStore::copyBuffer(
@@ -1047,7 +1046,7 @@ void C2RKComponentStore::visitComponents() {
 
 std::vector<std::shared_ptr<const C2Component::Traits>> C2RKComponentStore::listComponents() {
     // This method SHALL return within 500ms.
-    ALOGV("%s %d in", __FUNCTION__, __LINE__);
+    c2_trace_f("in");
     visitComponents();
     return mComponentList;
 }
@@ -1067,7 +1066,7 @@ c2_status_t C2RKComponentStore::findComponent(
 c2_status_t C2RKComponentStore::createComponent(
         C2String name, std::shared_ptr<C2Component> *const component) {
     // This method SHALL return within 100ms.
-    ALOGV("%s %d in", __FUNCTION__, __LINE__);
+    c2_trace_f("in");
     component->reset();
     std::shared_ptr<ComponentModule> module;
     c2_status_t res = findComponent(name, &module);
@@ -1080,7 +1079,7 @@ c2_status_t C2RKComponentStore::createComponent(
 
 c2_status_t C2RKComponentStore::createInterface(
         C2String name, std::shared_ptr<C2ComponentInterface> *const interface) {
-    ALOGV("%s %d in", __FUNCTION__, __LINE__);
+    c2_trace_f("in");
     // This method SHALL return within 100ms.
     interface->reset();
     std::shared_ptr<ComponentModule> module;
@@ -1111,7 +1110,7 @@ std::shared_ptr<C2ParamReflector> C2RKComponentStore::getParamReflector() const 
 }
 
 std::shared_ptr<C2ComponentStore> GetCodec2PlatformComponentStore() {
-    ALOGV("rk %s %d in ", __FUNCTION__, __LINE__);
+    c2_trace_f("in");
     static std::mutex mutex;
     static std::weak_ptr<C2ComponentStore> platformStore;
     std::lock_guard<std::mutex> lock(mutex);

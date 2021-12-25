@@ -19,19 +19,18 @@
 
 #include <C2PlatformSupport.h>
 
-#include <C2RKMpiDec.h>
-#include <C2RKMpiEnc.h>
-#include <C2RKMediaDefs.h>
+#include "C2RKMpiDec.h"
+#include "C2RKMpiEnc.h"
+#include "C2RKMediaUtils.h"
 #include "C2RKLog.h"
 #include "C2RKVersion.h"
 
 extern "C" ::C2ComponentFactory* CreateRKCodec2Factory(std::string componentName) {
-    c2_info("in %s version:%s", __func__, C2_GIT_BUILD_VERSION);
+    c2_info_f("in version:%s", C2_GIT_BUILD_VERSION);
     C2Component::kind_t kind;
     C2ComponentFactory *factory = NULL;
 
-    int ret = ::android::getKindFromComponentName(componentName, &kind);
-    if (ret) {
+    if (!C2RKMediaUtils::getKindFromComponentName(componentName, &kind)) {
         c2_err("get kind from component name failed, componentName=%s", componentName.c_str());
         goto __FAILED;
     }
@@ -55,7 +54,7 @@ __FAILED:
 }
 
 extern "C" void DestroyRKCodec2Factory(::C2ComponentFactory* factory) {
-    c2_info("in %s", __func__);
+    c2_info_f("in");
     delete factory;
 }
 

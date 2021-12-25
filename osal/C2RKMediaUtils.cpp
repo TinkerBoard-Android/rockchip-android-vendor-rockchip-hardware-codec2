@@ -15,37 +15,29 @@
  */
 
 #undef  ROCKCHIP_LOG_TAG
-#define ROCKCHIP_LOG_TAG    "C2RKMediaDefs"
+#define ROCKCHIP_LOG_TAG    "C2RKMediaUtils"
 
 #include <string.h>
-#include <C2Component.h>
 
 #include "hardware/hardware_rockchip.h"
-#include "C2RKMediaDefs.h"
+#include "C2RKMediaUtils.h"
 #include "C2RKLog.h"
+#include "mpp/mpp_soc.h"
 
-namespace android {
 
-const char *C2_RK_AVC_DEC_COMPONENT_NAME = "c2.rk.avc.decoder";
-const char *C2_RK_VP9_DEC_COMPONENT_NAME = "c2.rk.vp9.decoder";
-const char *C2_RK_HEVC_DEC_COMPONENT_NAME = "c2.rk.hevc.decoder";
-const char *C2_RK_VP8_DEC_COMPONENT_NAME = "c2.rk.vp8.decoder";
-const char *C2_RK_MPEG2_DEC_COMPONENT_NAME = "c2.rk.mpeg2.decoder";
-const char *C2_RK_MPEG4_DEC_COMPONENT_NAME = "c2.rk.m4v.decoder";
-const char *C2_RK_H263_DEC_COMPONENT_NAME = "c2.rk.h263.decoder";
-const char *C2_RK_AVC_ENC_COMPONENT_NAME = "c2.rk.avc.encoder";
-const char *C2_RK_HEVC_ENC_COMPONENT_NAME = "c2.rk.hevc.encoder";
+using namespace android;
 
-int getCodingTypeFromComponentName(
+C2_U32 c2_vdec_debug = 0;
+C2_U32 c2_venc_debug = 0;
+
+bool C2RKMediaUtils::getCodingTypeFromComponentName(
         C2String componentName, MppCodingType *codingType) {
     FunctionIn();
 
-    for (size_t i = 0;
-         i < sizeof(kCodingNameMapEntry) / sizeof(kCodingNameMapEntry[0]);
-         ++i) {
-        if (!strcasecmp(componentName.c_str(), kCodingNameMapEntry[i].componentName.c_str())) {
-            *codingType = kCodingNameMapEntry[i].codingType;
-            return 0;
+    for (int i = 0; i < C2_RK_ARRAY_ELEMS(kComponentMapEntry); ++i) {
+        if (!strcasecmp(componentName.c_str(), kComponentMapEntry[i].componentName.c_str())) {
+            *codingType = kComponentMapEntry[i].codingType;
+            return true;
         }
     }
 
@@ -53,26 +45,24 @@ int getCodingTypeFromComponentName(
 
     FunctionOut();
 
-    return -1;
+    return false;
 }
 
-int getMimeFromComponentName(C2String componentName, C2String *mime) {
+bool C2RKMediaUtils::getMimeFromComponentName(C2String componentName, C2String *mime) {
     FunctionIn();
 
-    for (size_t i = 0;
-         i < sizeof(kCodingNameMapEntry) / sizeof(kCodingNameMapEntry[0]);
-         ++i) {
-        if (!strcasecmp(componentName.c_str(), kCodingNameMapEntry[i].componentName.c_str())) {
-            *mime = kCodingNameMapEntry[i].mime;
-            return 0;
+    for (int i = 0; i < C2_RK_ARRAY_ELEMS(kComponentMapEntry); ++i) {
+        if (!strcasecmp(componentName.c_str(), kComponentMapEntry[i].componentName.c_str())) {
+            *mime = kComponentMapEntry[i].mime;
+            return true;
         }
     }
 
     FunctionOut();
 
-    return -1;
+    return false;
 }
-int getKindFromComponentName(C2String componentName, C2Component::kind_t *kind) {
+bool C2RKMediaUtils::getKindFromComponentName(C2String componentName, C2Component::kind_t *kind) {
     FunctionIn();
 
     C2Component::kind_t tmp_kind = C2Component::KIND_OTHER;
@@ -81,26 +71,25 @@ int getKindFromComponentName(C2String componentName, C2Component::kind_t *kind) 
     } else if (componentName.find("decoder") != std::string::npos) {
         tmp_kind = C2Component::KIND_DECODER;
     } else {
-        return -1;
+        return false;
     }
 
     *kind = tmp_kind;
 
     FunctionOut();
 
-    return 0;
+    return true;
 }
 
-int getDomainFromComponentName(C2String componentName, C2Component::domain_t *domain) {
+bool C2RKMediaUtils::getDomainFromComponentName(C2String componentName, C2Component::domain_t *domain) {
     FunctionIn();
 
-    int ret = 0;
     MppCodingType codingType;
     C2Component::domain_t tmp_domain;
-    ret = getCodingTypeFromComponentName(componentName, &codingType);
-    if (ret) {
+
+    if (!getCodingTypeFromComponentName(componentName, &codingType)) {
         c2_err("get coding type from component name failed");
-        return ret;
+        return false;
     }
 
     switch (codingType) {
@@ -115,8 +104,7 @@ int getDomainFromComponentName(C2String componentName, C2Component::domain_t *do
         } break;
         default: {
             c2_err("unsupport coding type: %d", codingType);
-            ret = -1;
-            return ret;
+            return false;
         }
     }
 
@@ -124,28 +112,27 @@ int getDomainFromComponentName(C2String componentName, C2Component::domain_t *do
 
     FunctionOut();
 
-    return ret;
+    return true;
 }
 
 
-uint32_t colorFormatMpiToAndroid(const uint32_t format) {
+bool C2RKMediaUtils::colorFormatMpiToAndroid(const uint32_t format, uint32_t *androidFormat) {
     FunctionIn();
 
-    uint32_t androidFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
     switch (format) {
         case MPP_FMT_YUV422SP:
         case MPP_FMT_YUV422P: {
-            androidFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP;
+            *androidFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP;
         } break;
         case MPP_FMT_YUV420SP:
         case MPP_FMT_YUV420P: {
-            androidFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
+            *androidFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
         } break;
         case MPP_FMT_YUV420SP_10BIT: {
-            androidFormat = HAL_PIXEL_FORMAT_YCrCb_NV12_10;
+            *androidFormat = HAL_PIXEL_FORMAT_YCrCb_NV12_10;
         } break;
         case MPP_FMT_YUV422SP_10BIT: {
-            androidFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP_10;
+            *androidFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP_10;
         } break;
         default: {
             c2_err("unsupport color format: %d", format);
@@ -154,8 +141,16 @@ uint32_t colorFormatMpiToAndroid(const uint32_t format) {
 
     FunctionOut();
 
-    return androidFormat;
+    return true;
 }
 
+bool C2RKMediaUtils::checkHWSupport(MppCtxType type, MppCodingType codingType) {
+    c2_info("type:%d codingType:%d", type, codingType);
+
+    if (!mpp_check_soc_cap(type, codingType)) {
+        return false;
+    }
+
+    return true;
 }
 

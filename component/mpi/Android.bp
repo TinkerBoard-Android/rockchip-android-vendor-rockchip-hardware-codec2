@@ -18,6 +18,10 @@ cc_library_static {
         "libui",
     ],
 
+    static_libs: [
+        "libcodec2_rk_osal",
+    ],
+
     header_libs: [
         "libhardware_rockchip_headers",
         "libui_headers",
@@ -25,6 +29,7 @@ cc_library_static {
 
     include_dirs: [
         "vendor/rockchip/hardware/interfaces/codec2/component/include",
+        "vendor/rockchip/hardware/interfaces/codec2/osal/include",
         "hardware/rockchip/librkvpu/omx_get_gralloc_private",
         "hardware/rockchip/librga/include",
     ],

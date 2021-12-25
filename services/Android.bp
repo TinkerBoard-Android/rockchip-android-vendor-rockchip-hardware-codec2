@@ -48,6 +48,16 @@ cc_binary {
         "libbinder",
         "libcutils", // for properties
         "libdmabufheap",
+        "libstagefright_foundation",
+        "libmpp",
+    ],
+
+    static_libs: [
+        "libcodec2_rk_osal",
+    ],
+
+    include_dirs: [
+        "vendor/rockchip/hardware/interfaces/codec2/osal/include",
     ],
 
     header_libs: [

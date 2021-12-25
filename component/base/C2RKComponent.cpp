@@ -25,8 +25,8 @@
 #include <C2Config.h>
 #include <C2Debug.h>
 #include <C2PlatformSupport.h>
-#include <C2RKComponent.h>
 
+#include "C2RKComponent.h"
 #include "C2RKLog.h"
 
 namespace android {
@@ -617,7 +617,7 @@ bool C2RKComponent::processQueue() {
 
         queue.unlock();
         if (unexpected) {
-            ALOGD("unexpected pending work");
+            c2_info_f("unexpected pending work");
             unexpected->result = C2_CORRUPTED;
             Mutexed<ExecState>::Locked state(mExecState);
             std::shared_ptr<C2Component::Listener> listener = state->mListener;

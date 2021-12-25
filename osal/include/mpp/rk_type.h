@@ -57,6 +57,9 @@ typedef signed long long int    RK_S64;
 /**
  * @ingroup rk_mpi
  * @brief The type of mpp context
+ * @details This type is used when calling mpp_init(), which including decoder,
+ *          encoder and Image Signal Process(ISP). So far decoder and encoder
+ *          are supported perfectly, and ISP will be supported in the future.
  */
 typedef enum {
     MPP_CTX_DEC,  /**< decoder */
@@ -96,6 +99,7 @@ typedef enum {
     MPP_VIDEO_CodingHEVC,               /**< H.265/HEVC */
     MPP_VIDEO_CodingAVSPLUS,            /**< AVS+ */
     MPP_VIDEO_CodingAVS,                /**< AVS profile=0x20 */
+    MPP_VIDEO_CodingAVS2,               /**< AVS2 */
     MPP_VIDEO_CodingKhronosExtensions = 0x6F000000, /**< Reserved region for introducing Khronos Standard Extensions */
     MPP_VIDEO_CodingVendorStartUnused = 0x7F000000, /**< Reserved region for introducing Vendor Extensions */
     MPP_VIDEO_CodingMax = 0x7FFFFFFF

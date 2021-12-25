@@ -22,12 +22,11 @@
 #include <atomic>
 #include <utils/Vector.h>
 #include <media/stagefright/foundation/ColorUtils.h>
-#include <C2RKComponent.h>
-#include <C2RKMediaDefs.h>
 #include <C2Debug.h>
 #include <C2PlatformSupport.h>
 #include <Codec2Mapper.h>
-#include <C2RKInterface.h>
+#include "C2RKInterface.h"
+#include "C2RKComponent.h"
 #include "mpp/rk_mpi.h"
 #include "C2RKLog.h"
 
@@ -97,7 +96,6 @@ private:
             const std::unique_ptr<C2Work> &work,
             const std::shared_ptr<C2GraphicBlock> block);
     c2_status_t flush();
-    c2_status_t flushWhenGenerationChange(C2OperatorType type);
     void fillEmptyWork(const std::unique_ptr<C2Work> &work);
     bool getVuiParams(MppFrame *frame);
     c2_status_t decode_sendstream(const std::unique_ptr<C2Work> &work);

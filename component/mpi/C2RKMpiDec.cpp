@@ -25,7 +25,7 @@
 #include <C2AllocatorGralloc.h>
 #include "hardware/hardware_rockchip.h"
 #include "C2RKMpiDec.h"
-#include "C2RKMediaDefs.h"
+#include "C2RKMediaUtils.h"
 #include "C2RKRgaDef.h"
 #include "C2RKVersion.h"
 #include "C2RKEnv.h"
@@ -350,9 +350,8 @@ C2RKMpiDec::C2RKMpiDec(
       mCodingType(MPP_VIDEO_CodingUnused),
       mSignalledOutputEos(false) {
     c2_info("version:%s", C2_GIT_BUILD_VERSION);
-    int err = getCodingTypeFromComponentName(name, &mCodingType);
-    if (err) {
-        c2_err("getCodingTypeFromComponentName failed! now codingtype=%d err=%d", mCodingType, err);
+    if (!C2RKMediaUtils::getCodingTypeFromComponentName(name, &mCodingType)) {
+        c2_err("getCodingTypeFromComponentName failed! now codingtype=%d", mCodingType);
     }
 }
 
@@ -537,7 +536,7 @@ c2_status_t C2RKMpiDec::flush() {
 }
 
 void C2RKMpiDec::fillEmptyWork(const std::unique_ptr<C2Work> &work) {
-    c2_info_f("in");
+    c2_trace_f("in");
     uint32_t flags = 0;
     if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
         flags |= C2FrameData::FLAG_END_OF_STREAM;
@@ -1040,7 +1039,9 @@ c2_status_t C2RKMpiDec::ensureBlockWithoutSurface(
     // TODO() format can't define here
     uint32_t                        format  = HAL_PIXEL_FORMAT_YCrCb_NV12;
 
-    format = colorFormatMpiToAndroid(mColorFormat);
+    if (!C2RKMediaUtils::colorFormatMpiToAndroid(mColorFormat, &format)){
+        c2_err_f("colorFormatMpiToAndroid fail");
+    }
 
     C2StreamBlockSizeInfo::output blockSize(0u, 0, 0);
     std::vector<std::unique_ptr<C2Param>> params;
@@ -1111,7 +1112,9 @@ c2_status_t C2RKMpiDec::ensureMppGroupReady(
         mCtx->mCommitList = new Vector<MppBufferCtx*>;
     }
 
-    format = colorFormatMpiToAndroid(mColorFormat);
+    if (!C2RKMediaUtils::colorFormatMpiToAndroid(mColorFormat, &format)){
+        c2_err_f("colorFormatMpiToAndroid fail");
+    }
 
     C2StreamMaxReferenceCountTuning::output maxRefsCount(0u);
     C2StreamBlockSizeInfo::output blockSize(0u, 0, 0);
@@ -1306,16 +1309,13 @@ public:
             : mHelper(std::static_pointer_cast<C2ReflectorHelper>(
                   GetCodec2PlatformComponentStore()->getParamReflector())),
               mComponentName(componentName) {
-        int err = getMimeFromComponentName(componentName, &mMime);
-        if (err) {
+        if (!C2RKMediaUtils::getMimeFromComponentName(componentName, &mMime)) {
             c2_err("getMimeFromComponentName failed, component name=%s", componentName.c_str());
         }
-        err = getDomainFromComponentName(componentName, &mDomain);
-        if (err) {
+        if (!C2RKMediaUtils::getDomainFromComponentName(componentName, &mDomain)) {
             c2_err("getDomainFromComponentName failed, component name=%s", componentName.c_str());
         }
-        err = getKindFromComponentName(componentName, &mKind);
-        if (err) {
+        if (!C2RKMediaUtils::getKindFromComponentName(componentName, &mKind)) {
             c2_err("getKindFromComponentName failed, component name=%s", componentName.c_str());
         }
     }
