@@ -17,56 +17,13 @@
 #ifndef ANDROID_C2_RK_MPI_DEC_H_
 #define ANDROID_C2_RK_MPI_DEC_H_
 
-#include <sys/time.h>
-#include <map>
-#include <atomic>
-#include <utils/Vector.h>
-#include <media/stagefright/foundation/ColorUtils.h>
-#include <C2Debug.h>
-#include <C2PlatformSupport.h>
-#include <Codec2Mapper.h>
-#include "C2RKInterface.h"
 #include "C2RKComponent.h"
+#include "C2RKInterface.h"
 #include "mpp/rk_mpi.h"
-#include "C2RKLog.h"
+
+#include <utils/Vector.h>
 
 namespace android {
-
-#define FLAG_NON_DISPLAY_FRAME (1u << 15)
-
-typedef struct _MppBufferCtx {
-    /* index to find MppBuffer */
-    int32_t       mIndex;
-    /* mpp buffer */
-    MppBuffer mMppBuffer;
-    /* who own this buffer */
-    int32_t       mSite;
-    /* block shared by surface*/
-    std::shared_ptr<C2GraphicBlock> mBlock;
-} MppBufferCtx;
-
-typedef struct _MpiCodecContext {
-    MppCtx              mppCtx;
-    MppApi             *mppMpi;
-    MppBufferGroup      frameGroup;
-    /*
-     * commit buffer list.
-     * These buffers are alloced by c2,
-     * commit to decoder(encoder) for keep frames(stream).
-     */
-    Vector<MppBufferCtx*>* mCommitList;
-} MpiCodecContext;
-
-typedef enum {
-    BUFFER_SITE_BY_MPI = 0,
-    BUFFER_SITE_BY_C2 = 1,
-} MppBufferSite;
-
-constexpr uint32_t kDefaultOutputDelay = 16;
-constexpr uint32_t kMaxOutputDelay = 16;
-constexpr uint32_t kMaxReferenceCount = 16;
-constexpr uint32_t kMaxRetryNum = 20;
-constexpr size_t kMinInputBufferSize = 2 * 1024 * 1024;
 
 class C2RKMpiDec : public C2RKComponent {
 public:
@@ -83,6 +40,7 @@ public:
     void onReset() override;
     void onRelease() override;
     c2_status_t onFlush_sm() override;
+    c2_status_t flush();
     void process(
             const std::unique_ptr<C2Work> &work,
             const std::shared_ptr<C2BlockPool> &pool) override;
@@ -91,48 +49,53 @@ public:
             const std::shared_ptr<C2BlockPool> &pool) override;
 
 private:
-    void finishWork(
-            uint64_t index,
-            const std::unique_ptr<C2Work> &work,
-            const std::shared_ptr<C2GraphicBlock> block);
-    c2_status_t flush();
-    void fillEmptyWork(const std::unique_ptr<C2Work> &work);
-    bool getVuiParams(MppFrame *frame);
-    c2_status_t decode_sendstream(const std::unique_ptr<C2Work> &work);
-    c2_status_t decode_getoutframe(const std::unique_ptr<C2Work> &work);
-    c2_status_t drainInternal(
-        uint32_t drainMode,
-        const std::shared_ptr<C2BlockPool> &pool,
-        const std::unique_ptr<C2Work> &work);
-    c2_status_t ensureBlockWithoutSurface(const std::shared_ptr<C2BlockPool> &pool);
-    c2_status_t ensureMppGroupReady(const std::shared_ptr<C2BlockPool> &pool);
-    c2_status_t registerBufferToMpp(std::shared_ptr<C2GraphicBlock> block);
-    void* findMppBufferCtx(int32_t index);
-    void* findMppBufferCtx(MppBuffer buffer);
-    void cleanMppBufferCtx();
-    void cleanMppBufferCtx(int32_t site);
+    enum MyBufferSite{
+        MY_BUFFER_SITE_BY_MPI = 0,
+        MY_BUFFER_SITE_BY_C2,
+        MY_BUFFER_SITE_BY_ABANDON,
+    };
 
-private:
+    typedef struct {
+        /* index to find MppBuffer */
+        uint32_t     index;
+        /* mpp buffer */
+        MppBuffer    mBuffer;
+        /* who own this buffer */
+        MyBufferSite site;
+        /* block shared by surface*/
+        std::shared_ptr<C2GraphicBlock> block;
+    } MyC2Buffer;
+
     std::shared_ptr<IntfImpl> mIntf;
-    std::shared_ptr<C2GraphicBlock> mOutBlock;
-    std::map<uint64_t, uint64_t> mPtsMaps;
-    int64_t mLastPts;
-    bool mOutputEos;
-    bool mFlushed;
-    bool mAllocWithoutSurface;
+
+    /* MPI interface parameters */
+    MppCtx          mMppCtx;
+    MppApi         *mMppMpi;
+    MppCodingType   mCodingType;
+    MppFrameFormat  mColorFormat;
+    MppBufferGroup  mFrmGrp;
+    Vector<MyC2Buffer*> mC2Buffers;
 
     uint32_t mWidth;
     uint32_t mHeight;
-    std::atomic_uint64_t mOutIndex;
+    uint64_t mLastPts;
 
-    MppFrameFormat mColorFormat;
-    MpiCodecContext *mCtx;
-
-    MppCodingType mCodingType;
+    bool mStarted;
+    bool mFlushed;
+    bool mOutputEos;
     bool mSignalledOutputEos;
 
-    // Color aspects. These are ISO values and are meant to detect changes in aspects to avoid
-    // converting them to C2 values for each frame
+    /*
+       1. BufferMode:  without surcace
+       2. SurfaceMode: with surface
+    */
+    bool mBufferMode;
+
+    std::shared_ptr<C2GraphicBlock> mOutBlock;
+    std::map<uint64_t, uint64_t> mPtsMaps;
+
+    // Color aspects. These are ISO values and are meant to detect changes
+    // in aspects to avoid converting them to C2 values for each frame.
     struct VuiColorAspects {
         uint8_t primaries;
         uint8_t transfer;
@@ -144,144 +107,66 @@ private:
             : primaries(2), transfer(2), coeffs(2), fullRange(0) { }
 
         bool operator==(const VuiColorAspects &o) {
-            return primaries == o.primaries && transfer == o.transfer && coeffs == o.coeffs
-                    && fullRange == o.fullRange;
+            return primaries == o.primaries && transfer == o.transfer &&
+                    coeffs == o.coeffs && fullRange == o.fullRange;
         }
     } mBitstreamColorAspects;
 
+    void fillEmptyWork(const std::unique_ptr<C2Work> &work);
+    void finishWork(
+            uint64_t index,
+            const std::unique_ptr<C2Work> &work,
+            const std::shared_ptr<C2GraphicBlock> block);
+    c2_status_t drainInternal(
+        uint32_t drainMode,
+        const std::shared_ptr<C2BlockPool> &pool,
+        const std::unique_ptr<C2Work> &work);
+
+    c2_status_t initDecoder();
+    void getVuiParams(MppFrame frame);
+    c2_status_t decode_sendstream(const std::unique_ptr<C2Work> &work);
+    c2_status_t decode_getoutframe(const std::unique_ptr<C2Work> &work);
+
+    c2_status_t commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block);
+    c2_status_t ensureBlockState(const std::shared_ptr<C2BlockPool> &pool);
+
+    /*
+     * MyC2Buffer vector operations
+     */
+    MyC2Buffer* findMyBuffer(uint32_t index) {
+        for (int i = 0; i < mC2Buffers.size(); i++) {
+            MyC2Buffer *buffer = mC2Buffers.editItemAt(i);
+            if (buffer->index == index) {
+                return buffer;
+            }
+        }
+        return nullptr;
+    }
+
+    MyC2Buffer* findMyBuffer(MppBuffer mBuffer) {
+        for (int i = 0; i < mC2Buffers.size(); i++) {
+            MyC2Buffer *buffer = mC2Buffers.editItemAt(i);
+            if (buffer->mBuffer == mBuffer) {
+                return buffer;
+            }
+        }
+        return nullptr;
+    }
+
+    void clearMyBuffers() {
+        while (!mC2Buffers.isEmpty()) {
+            MyC2Buffer *buffer = mC2Buffers.editItemAt(0);
+            if (buffer != NULL) {
+                if (buffer->site != MY_BUFFER_SITE_BY_MPI) {
+                    mpp_buffer_put(buffer->mBuffer);
+                }
+                delete buffer;
+            }
+            mC2Buffers.removeAt(0);
+        }
+    }
+
     C2_DO_NOT_COPY(C2RKMpiDec);
-};
-
-class C2RKMpiDec::IntfImpl : public C2RKInterface<void>::BaseParams {
-public:
-    explicit IntfImpl(
-                const std::shared_ptr<C2ReflectorHelper> &helper,
-                C2String name,
-                C2Component::kind_t kind,
-                C2Component::domain_t domain,
-                C2String mediaType);
-
-    static C2R SizeSetter(bool mayBlock, const C2P<C2StreamPictureSizeInfo::output> &oldMe,
-                          C2P<C2StreamPictureSizeInfo::output> &me) {
-        (void)mayBlock;
-        C2R res = C2R::Ok();
-        if (!me.F(me.v.width).supportsAtAll(me.v.width)) {
-            res = res.plus(C2SettingResultBuilder::BadValue(me.F(me.v.width)));
-            me.set().width = oldMe.v.width;
-        }
-        if (!me.F(me.v.height).supportsAtAll(me.v.height)) {
-            res = res.plus(C2SettingResultBuilder::BadValue(me.F(me.v.height)));
-            me.set().height = oldMe.v.height;
-        }
-        return res;
-    }
-
-    static C2R BlockSizeSetter(bool mayBlock, const C2P<C2StreamBlockSizeInfo::output> &oldMe,
-                          C2P<C2StreamBlockSizeInfo::output> &me) {
-        (void)mayBlock;
-        C2R res = C2R::Ok();
-        if (!me.F(me.v.width).supportsAtAll(me.v.width)) {
-            res = res.plus(C2SettingResultBuilder::BadValue(me.F(me.v.width)));
-            me.set().width = oldMe.v.width;
-        }
-        if (!me.F(me.v.height).supportsAtAll(me.v.height)) {
-            res = res.plus(C2SettingResultBuilder::BadValue(me.F(me.v.height)));
-            me.set().height = oldMe.v.height;
-        }
-        return res;
-    }
-
-    static C2R MaxPictureSizeSetter(bool mayBlock, C2P<C2StreamMaxPictureSizeTuning::output> &me,
-                                    const C2P<C2StreamPictureSizeInfo::output> &size) {
-        c2_info("%s %d in", __FUNCTION__, __LINE__);
-        (void)mayBlock;
-        // TODO: get max width/height from the size's field helpers vs. hardcoding
-        me.set().width = c2_min(c2_max(me.v.width, size.v.width), 4080u);
-        me.set().height = c2_min(c2_max(me.v.height, size.v.height), 4080u);
-        return C2R::Ok();
-    }
-
-    static C2R MaxInputSizeSetter(bool mayBlock, C2P<C2StreamMaxBufferSizeInfo::input> &me,
-                                  const C2P<C2StreamMaxPictureSizeTuning::output> &maxSize) {
-        (void)mayBlock;
-        // assume compression ratio of 2
-        me.set().value = c2_max((((maxSize.v.width + 63) / 64)
-                * ((maxSize.v.height + 63) / 64) * 3072), kMinInputBufferSize);
-        return C2R::Ok();
-    }
-
-    static C2R ProfileLevelSetter(bool mayBlock, C2P<C2StreamProfileLevelInfo::input> &me,
-                                  const C2P<C2StreamPictureSizeInfo::output> &size) {
-        (void)mayBlock;
-        (void)size;
-        (void)me;  // TODO: validate
-        return C2R::Ok();
-    }
-
-    static C2R DefaultColorAspectsSetter(bool mayBlock, C2P<C2StreamColorAspectsTuning::output> &me) {
-        (void)mayBlock;
-        if (me.v.range > C2Color::RANGE_OTHER) {
-                me.set().range = C2Color::RANGE_OTHER;
-        }
-        if (me.v.primaries > C2Color::PRIMARIES_OTHER) {
-                me.set().primaries = C2Color::PRIMARIES_OTHER;
-        }
-        if (me.v.transfer > C2Color::TRANSFER_OTHER) {
-                me.set().transfer = C2Color::TRANSFER_OTHER;
-        }
-        if (me.v.matrix > C2Color::MATRIX_OTHER) {
-                me.set().matrix = C2Color::MATRIX_OTHER;
-        }
-        return C2R::Ok();
-    }
-
-    static C2R CodedColorAspectsSetter(bool mayBlock, C2P<C2StreamColorAspectsInfo::input> &me) {
-        (void)mayBlock;
-        if (me.v.range > C2Color::RANGE_OTHER) {
-                me.set().range = C2Color::RANGE_OTHER;
-        }
-        if (me.v.primaries > C2Color::PRIMARIES_OTHER) {
-                me.set().primaries = C2Color::PRIMARIES_OTHER;
-        }
-        if (me.v.transfer > C2Color::TRANSFER_OTHER) {
-                me.set().transfer = C2Color::TRANSFER_OTHER;
-        }
-        if (me.v.matrix > C2Color::MATRIX_OTHER) {
-                me.set().matrix = C2Color::MATRIX_OTHER;
-        }
-        return C2R::Ok();
-    }
-
-    static C2R ColorAspectsSetter(bool mayBlock, C2P<C2StreamColorAspectsInfo::output> &me,
-                                  const C2P<C2StreamColorAspectsTuning::output> &def,
-                                  const C2P<C2StreamColorAspectsInfo::input> &coded) {
-        (void)mayBlock;
-        // take default values for all unspecified fields, and coded values for specified ones
-        me.set().range = coded.v.range == RANGE_UNSPECIFIED ? def.v.range : coded.v.range;
-        me.set().primaries = coded.v.primaries == PRIMARIES_UNSPECIFIED
-                ? def.v.primaries : coded.v.primaries;
-        me.set().transfer = coded.v.transfer == TRANSFER_UNSPECIFIED
-                ? def.v.transfer : coded.v.transfer;
-        me.set().matrix = coded.v.matrix == MATRIX_UNSPECIFIED ? def.v.matrix : coded.v.matrix;
-        return C2R::Ok();
-    }
-
-    std::shared_ptr<C2StreamColorAspectsInfo::output> getColorAspects_l() {
-        return mColorAspects;
-    }
-public:
-    std::shared_ptr<C2StreamProfileLevelInfo::input> mProfileLevel;
-    std::shared_ptr<C2StreamPictureSizeInfo::output> mSize;
-    std::shared_ptr<C2StreamBlockSizeInfo::output> mBlockSize;
-    std::shared_ptr<C2StreamBlockCountInfo::output> mBlockCount;
-    std::shared_ptr<C2StreamMaxPictureSizeTuning::output> mMaxSize;
-    std::shared_ptr<C2StreamMaxBufferSizeInfo::input> mMaxInputSize;
-    std::shared_ptr<C2StreamColorInfo::output> mColorInfo;
-    std::shared_ptr<C2StreamPixelFormatInfo::output> mPixelFormat;
-    std::shared_ptr<C2StreamMaxReferenceCountTuning::output> mMaxRefCount;
-    std::shared_ptr<C2StreamColorAspectsInfo::input> mCodedColorAspects;
-    std::shared_ptr<C2StreamColorAspectsTuning::output> mDefaultColorAspects;
-    std::shared_ptr<C2StreamColorAspectsInfo::output> mColorAspects;
 };
 
 C2ComponentFactory* CreateRKMpiDecFactory(std::string componentName);
