@@ -32,6 +32,7 @@
 #include <sys/syscall.h>
 
 #include "hardware/hardware_rockchip.h"
+#include "hardware/gralloc_rockchip.h"
 #include "C2RKMpiEnc.h"
 #include "C2RKMediaUtils.h"
 #include "C2RKRgaDef.h"
@@ -41,8 +42,6 @@
 #include "C2RKEnv.h"
 #include "C2RKVideoGlobal.h"
 #include "C2RKVersion.h"
-
-#define RK_GRALLOC_USAGE_WITHIN_4G   (1ULL << 56)
 
 namespace android {
 

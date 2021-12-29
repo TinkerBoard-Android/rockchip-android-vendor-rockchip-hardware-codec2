@@ -23,6 +23,7 @@
 #include <Codec2Mapper.h>
 
 #include "hardware/hardware_rockchip.h"
+#include "hardware/gralloc_rockchip.h"
 #include "C2RKMpiDec.h"
 #include "C2RKLog.h"
 #include "C2RKMediaUtils.h"
@@ -31,10 +32,6 @@
 #include "C2RKEnv.h"
 
 #define FLAG_NON_DISPLAY_FRAME (1u << 15)
-
-#define GRALLOC_USAGE_HW_TEXTURE            1ULL << 8
-#define GRALLOC_USAGE_HW_COMPOSER           1ULL << 11
-#define RK_GRALLOC_USAGE_SPECIFY_STRIDE     1ULL << 30
 
 namespace android {
 
