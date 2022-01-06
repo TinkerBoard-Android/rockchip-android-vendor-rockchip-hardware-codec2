@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "hardware/hardware_rockchip.h"
+#include "hardware/gralloc_rockchip.h"
 #include "C2RKMediaUtils.h"
 #include "C2RKLog.h"
 #include "mpp/mpp_soc.h"
@@ -154,3 +155,14 @@ bool C2RKMediaUtils::checkHWSupport(MppCtxType type, MppCodingType codingType) {
     return true;
 }
 
+int64_t C2RKMediaUtils::getStrideUsage(int32_t width, int32_t stride) {
+    if (stride == C2_ALIGN_ODD(width, 256)) {
+        return RK_GRALLOC_USAGE_STRIDE_ALIGN_256_ODD_TIMES;
+    } else if (stride == C2_ALIGN(width, 128)) {
+        return  RK_GRALLOC_USAGE_STRIDE_ALIGN_128;
+    } else if (stride == C2_ALIGN(width, 64)) {
+        return RK_GRALLOC_USAGE_STRIDE_ALIGN_64;
+    } else {
+        return RK_GRALLOC_USAGE_STRIDE_ALIGN_16;
+    }
+}

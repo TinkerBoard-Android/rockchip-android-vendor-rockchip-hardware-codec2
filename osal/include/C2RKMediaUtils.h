@@ -36,6 +36,8 @@ enum C2OperatorType {
 
 #define C2_SAFE_FREE(p) { if (p) {free(p); (p)=NULL;} }
 #define C2_ALIGN(x, a)         (((x)+(a)-1)&~((a)-1))
+#define C2_ALIGN_ODD(x, a)     (((x)+(a)-1)&~((a)-1) | a)
+
 #define C2_RK_ARRAY_ELEMS(a)      (sizeof(a) / sizeof((a)[0]))
 
 static const struct ComponentMapEntry {
@@ -63,6 +65,7 @@ public:
     static bool getDomainFromComponentName(C2String componentName, C2Component::domain_t *domain);
     static bool colorFormatMpiToAndroid(const uint32_t format, uint32_t *androidFormat);
     static bool checkHWSupport(MppCtxType type, MppCodingType codingType);
+    static int64_t getStrideUsage(int32_t width, int32_t stride);
 };
 
 #endif  // ANDROID_C2_RK_MEDIA_UTILS_H_

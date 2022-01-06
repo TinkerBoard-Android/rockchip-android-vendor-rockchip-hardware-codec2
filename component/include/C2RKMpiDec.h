@@ -78,6 +78,8 @@ private:
 
     uint32_t mWidth;
     uint32_t mHeight;
+    uint32_t mHorStride;
+    uint32_t mVerStride;
     uint64_t mLastPts;
 
     bool mStarted;

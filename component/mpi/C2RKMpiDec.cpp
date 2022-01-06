@@ -21,6 +21,8 @@
 #include <C2PlatformSupport.h>
 #include <C2AllocatorGralloc.h>
 #include <Codec2Mapper.h>
+#include <ui/GraphicBufferMapper.h>
+#include <gralloc_priv_omx.h>
 
 #include "hardware/hardware_rockchip.h"
 #include "hardware/gralloc_rockchip.h"
@@ -482,6 +484,8 @@ C2RKMpiDec::C2RKMpiDec(
       mFrmGrp(nullptr),
       mWidth(320),
       mHeight(240),
+      mHorStride(0),
+      mVerStride(0),
       mLastPts(-1),
       mStarted(false),
       mFlushed(false),
@@ -568,10 +572,15 @@ c2_status_t C2RKMpiDec::flush() {
         return C2_CORRUPTED;
     }
 
-    mpp_buffer_group_clear(mFrmGrp);
-    mMppMpi->reset(mMppCtx);
+    if (mFrmGrp) {
+        mpp_buffer_group_clear(mFrmGrp);
+    }
+    if (mMppMpi) {
+        mMppMpi->reset(mMppCtx);
+    }
 
     mFlushed = true;
+
     return ret;
 }
 
@@ -603,7 +612,6 @@ c2_status_t C2RKMpiDec::initDecoder() {
 
     {
         MppFrame frame = nullptr;
-        uint32_t wstride = 0, hstride = 0;
 
         mpp_frame_init(&frame);
         mpp_frame_set_width(frame, mWidth);
@@ -624,21 +632,13 @@ c2_status_t C2RKMpiDec::initDecoder() {
             mMppMpi->control(mMppCtx, MPP_DEC_SET_FRAME_INFO, (MppParam)frame);
         }
 
-        wstride = mpp_frame_get_hor_stride(frame);
-        hstride = mpp_frame_get_ver_stride(frame);
+        mHorStride = mpp_frame_get_hor_stride(frame);
+        mVerStride = mpp_frame_get_ver_stride(frame);
 
-        c2_info("init: get stride [%d:%d]", wstride, hstride);
-
-        /* config output block size */
-        std::vector<std::unique_ptr<C2SettingResult>> failures;
-        C2StreamBlockSizeInfo::output blockSize(0u, wstride, hstride);
-        ret = mIntf->config({&blockSize}, C2_MAY_BLOCK, &failures);
-        if (ret != C2_OK) {
-            c2_err_f("failed to config output block size, ret %d", ret);
-            goto __FAILED;
-        }
+        c2_info("init: get stride [%d:%d]", mHorStride, mVerStride);
 
         /* config output reference buffer count */
+        std::vector<std::unique_ptr<C2SettingResult>> failures;
         C2StreamMaxReferenceCountTuning::output maxRefCount(0, kMaxReferenceCount);
         ret = mIntf->config({&maxRefCount}, C2_MAY_BLOCK, &failures);
         if (ret != C2_OK) {
@@ -881,7 +881,6 @@ void C2RKMpiDec::process(
     } else if (inSize == 0 && eos) {
         c2_info("get empty input work with eos");
         mSignalledOutputEos = true;
-        fillEmptyWork(work);
     }
 
     uint32_t pkt_done = 0;
@@ -1065,16 +1064,17 @@ c2_status_t C2RKMpiDec::decode_getoutframe(const std::unique_ptr<C2Work> &work) 
 
         mWidth = width;
         mHeight = height;
+        mHorStride = wstride;
+        mVerStride = hstride;
         mColorFormat = format;
 
         clearMyBuffers();
 
         if (!mBufferMode) {
             C2StreamPictureSizeInfo::output size(0u, mWidth, mHeight);
-            C2StreamBlockSizeInfo::output blockSize(0u, wstride, hstride);
             C2StreamBlockCountInfo::output blockCount(0u);
             std::vector<std::unique_ptr<C2SettingResult>> failures;
-            ret = mIntf->config({ &size, &blockSize, &blockCount },
+            ret = mIntf->config({ &size, &blockCount },
                                 C2_MAY_BLOCK, &failures);
             if (ret != C2_OK) {
                 c2_err_f("failed to config block info, err %d", ret);
@@ -1191,6 +1191,25 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
                 c2Handle, &width, &height, &format, &usage,
                 &stride, &generation, &bqId, &bqSlot);
 
+    auto GetC2BlockSize
+            = [c2Handle, width, height, format, usage, stride]() -> uint32_t {
+        gralloc_private_handle_t pHandle;
+        buffer_handle_t bHandle;
+        native_handle_t *nHandle = UnwrapNativeCodec2GrallocHandle(c2Handle);
+
+        GraphicBufferMapper &gm(GraphicBufferMapper::get());
+        gm.importBuffer(const_cast<native_handle_t *>(nHandle),
+                        width, height, 1, format, usage,
+                        stride, &bHandle);
+
+        Rockchip_get_gralloc_private((uint32_t *)bHandle, &pHandle);
+
+        gm.freeBuffer(bHandle);
+        native_handle_delete(nHandle);
+
+        return pHandle.size;
+    };
+
     MyC2Buffer *buffer = findMyBuffer(bqSlot);
     if (buffer) {
         /* commit this buffer back to mpp */
@@ -1201,8 +1220,7 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
         buffer->block = block;
         buffer->site = MY_BUFFER_SITE_BY_MPI;
 
-        c2_trace("commit this Buffer: fd %d slot %d mBuffer %p outBlock %p",
-                 fd, bqSlot, mppBuffer, block.get());
+        c2_trace("put this buffer: slot %d fd %d", bqSlot, fd);
     } else {
         /* register this buffer to mpp group */
         MppBuffer mppBuffer = nullptr;
@@ -1213,13 +1231,12 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
         info.fd = fd;
         info.ptr = nullptr;
         info.hnd = nullptr;
-        info.size = width * height * 2;
+        info.size = GetC2BlockSize();
 
         mpp_buffer_import_with_tag(mFrmGrp, &info,
                                    &mppBuffer, "codec2", __FUNCTION__);
 
-        c2_trace("register this Buffer: fd %d slot %d mBuffer %p outBlock %p",
-                 fd, bqSlot, mppBuffer, block.get());
+        c2_trace("import this buffer: slot %d fd %d size %d", bqSlot, info.fd, info.size);
 
         MyC2Buffer *buffer = new MyC2Buffer();
         buffer->index = bqSlot;
@@ -1240,11 +1257,10 @@ c2_status_t C2RKMpiDec::ensureBlockState(
 
     /* query block info */
     C2StreamMaxReferenceCountTuning::output maxRefCount(0u);
-    C2StreamBlockSizeInfo::output blockSize(0u, 0, 0);
     C2StreamBlockCountInfo::output blockCount(0u);
     std::vector<std::unique_ptr<C2Param>> params;
     ret = intf()->query_vb(
-            { &maxRefCount, &blockSize, &blockCount },
+            { &maxRefCount, &blockCount },
             {},
             C2_DONT_BLOCK,
             &params);
@@ -1253,12 +1269,15 @@ c2_status_t C2RKMpiDec::ensureBlockState(
         return ret;
     }
 
-    uint32_t blockW = blockSize.width;
-    uint32_t blockH = blockSize.height;
+    uint32_t FrameW = mHorStride;
+    uint32_t FrameH = mVerStride;
+    uint32_t blockW = mWidth;
+    uint32_t blockH = FrameH;
 
-    uint32_t usage = (GRALLOC_USAGE_SW_READ_OFTEN |
+    uint64_t strideUsage = C2RKMediaUtils::getStrideUsage(blockW, FrameW);
+    uint64_t usage = (GRALLOC_USAGE_SW_READ_OFTEN |
                       GRALLOC_USAGE_SW_WRITE_OFTEN |
-                      RK_GRALLOC_USAGE_SPECIFY_STRIDE);
+                      strideUsage);
 
     uint32_t format = HAL_PIXEL_FORMAT_YCrCb_NV12;
     if (!C2RKMediaUtils::colorFormatMpiToAndroid(mColorFormat, &format)) {
@@ -1267,7 +1286,7 @@ c2_status_t C2RKMpiDec::ensureBlockState(
 
     if (blockW <= 0 || blockH <= 0) {
         c2_err_f("query get illegal block size, w %d h %d", blockW, blockH);
-        return ret;
+        return C2_CORRUPTED;
     }
 
     /*
