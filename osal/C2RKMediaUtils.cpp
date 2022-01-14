@@ -117,23 +117,25 @@ bool C2RKMediaUtils::getDomainFromComponentName(C2String componentName, C2Compon
 }
 
 
-bool C2RKMediaUtils::colorFormatMpiToAndroid(const uint32_t format, uint32_t *androidFormat) {
+int32_t C2RKMediaUtils::colorFormatMpiToAndroid(const uint32_t format) {
     FunctionIn();
+
+    int32_t aFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
 
     switch (format) {
         case MPP_FMT_YUV422SP:
         case MPP_FMT_YUV422P: {
-            *androidFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP;
+            aFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP;
         } break;
         case MPP_FMT_YUV420SP:
         case MPP_FMT_YUV420P: {
-            *androidFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
+            aFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
         } break;
         case MPP_FMT_YUV420SP_10BIT: {
-            *androidFormat = HAL_PIXEL_FORMAT_YCrCb_NV12_10;
+            aFormat = HAL_PIXEL_FORMAT_YCrCb_NV12_10;
         } break;
         case MPP_FMT_YUV422SP_10BIT: {
-            *androidFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP_10;
+            aFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP_10;
         } break;
         default: {
             c2_err("unsupport color format: %d", format);
@@ -142,7 +144,7 @@ bool C2RKMediaUtils::colorFormatMpiToAndroid(const uint32_t format, uint32_t *an
 
     FunctionOut();
 
-    return true;
+    return aFormat;
 }
 
 bool C2RKMediaUtils::checkHWSupport(MppCtxType type, MppCodingType codingType) {
@@ -155,7 +157,7 @@ bool C2RKMediaUtils::checkHWSupport(MppCtxType type, MppCodingType codingType) {
     return true;
 }
 
-int64_t C2RKMediaUtils::getStrideUsage(int32_t width, int32_t stride) {
+uint64_t C2RKMediaUtils::getStrideUsage(int32_t width, int32_t stride) {
     if (stride == C2_ALIGN_ODD(width, 256)) {
         return RK_GRALLOC_USAGE_STRIDE_ALIGN_256_ODD_TIMES;
     } else if (stride == C2_ALIGN(width, 128)) {

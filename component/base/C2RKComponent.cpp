@@ -423,8 +423,16 @@ std::list<std::unique_ptr<C2Work>> vec(std::unique_ptr<C2Work> &work) {
 }  // namespace
 
 void C2RKComponent::finish(
-        uint64_t frameIndex, std::function<void(const std::unique_ptr<C2Work> &)> fillWork) {
+        uint64_t frameIndex,
+        std::function<void(const std::unique_ptr<C2Work> &)> fillWork,
+        bool delayOutput) {
     std::unique_ptr<C2Work> work;
+
+    if (delayOutput) {
+        mReadyWork.push_back({ frameIndex, fillWork });
+        return;
+    }
+
     {
         Mutexed<WorkQueue>::Locked queue(mWorkQueue);
         if (queue->pending().count(frameIndex) == 0) {
@@ -603,6 +611,13 @@ bool C2RKComponent::processQueue() {
         std::shared_ptr<C2Component::Listener> listener = state->mListener;
         state.unlock();
         listener->onWorkDone_nb(shared_from_this(), vec(work));
+
+        // output all delayOutput work in this call.
+        while (mReadyWork.size() > 0) {
+            WorkInfo info = mReadyWork.front();
+            finish(info.frameIndex, info.fillWork);
+            mReadyWork.pop_front();
+        }
     } else {
         c2_trace("queue pending work");
         work->input.buffers.clear();

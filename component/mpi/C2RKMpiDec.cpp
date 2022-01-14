@@ -47,8 +47,6 @@ constexpr uint32_t kMaxVideoHeight = 4320;
 constexpr uint32_t kMaxReferenceCount = 16;
 constexpr size_t kMinInputBufferSize = 2 * 1024 * 1024;
 
-constexpr uint32_t kMaxRetryNum = 20;
-
 class C2RKMpiDec::IntfImpl : public C2RKInterface<void>::BaseParams {
 public:
     explicit IntfImpl(
@@ -100,21 +98,6 @@ public:
                 })
                 .withSetter(BlockSizeSetter)
                 .build());
-
-        addParameter(
-                DefineParam(mBlockCount, C2_PARAMKEY_BLOCK_COUNT)
-                .withDefault(new C2StreamBlockCountInfo::output(0u, 0u))
-                .withFields({C2F(mBlockCount, value).inRange(0, kMaxReferenceCount)})
-                .withSetter(Setter<decltype(*mBlockCount)>::StrictValueWithNoDeps)
-                .build());
-
-        // max output reference buffer count
-        addParameter(
-               DefineParam(mMaxRefCount, C2_PARAMKEY_OUTPUT_MAX_REFERENCE_COUNT)
-               .withDefault(new C2StreamMaxReferenceCountTuning::output(0, kMaxReferenceCount))
-               .withFields({C2F(mMaxRefCount, value).inRange(0, kMaxReferenceCount)})
-               .withSetter(Setter<C2StreamMaxReferenceCountTuning::output>::NonStrictValueWithNoDeps)
-               .build());
 
         // TODO: support more formats?
         addParameter(
@@ -460,8 +443,6 @@ private:
     std::shared_ptr<C2StreamPictureSizeInfo::output> mSize;
     std::shared_ptr<C2StreamMaxPictureSizeTuning::output> mMaxSize;
     std::shared_ptr<C2StreamBlockSizeInfo::output> mBlockSize;
-    std::shared_ptr<C2StreamBlockCountInfo::output> mBlockCount;
-    std::shared_ptr<C2StreamMaxReferenceCountTuning::output> mMaxRefCount;
     std::shared_ptr<C2StreamPixelFormatInfo::output> mPixelFormat;
     std::shared_ptr<C2StreamProfileLevelInfo::input> mProfileLevel;
     std::shared_ptr<C2StreamMaxBufferSizeInfo::input> mMaxInputSize;
@@ -482,15 +463,16 @@ C2RKMpiDec::C2RKMpiDec(
       mCodingType(MPP_VIDEO_CodingUnused),
       mColorFormat(MPP_FMT_YUV420SP),
       mFrmGrp(nullptr),
-      mWidth(320),
-      mHeight(240),
+      mWidth(0),
+      mHeight(0),
       mHorStride(0),
       mVerStride(0),
       mLastPts(-1),
       mStarted(false),
       mFlushed(false),
       mOutputEos(false),
-      mSignalledOutputEos(false),
+      mSignalledInputEos(false),
+      mSignalledError(false),
       mBufferMode(false) {
     c2_info("version: %s", C2_GIT_BUILD_VERSION);
 
@@ -510,14 +492,12 @@ c2_status_t C2RKMpiDec::onInit() {
 }
 
 c2_status_t C2RKMpiDec::onStop() {
-    c2_status_t ret = C2_OK;
-
     c2_info_f("in");
+    if (!mFlushed) {
+        return onFlush_sm();
+    }
 
-    if (!mFlushed)
-        ret = flush();
-
-    return ret;
+    return C2_OK;
 }
 
 void C2RKMpiDec::onReset() {
@@ -530,47 +510,36 @@ void C2RKMpiDec::onRelease() {
 
     mStarted = false;
 
+    if (!mFlushed) {
+        onFlush_sm();
+    }
+
     if (mOutBlock) {
         mOutBlock.reset();
-    }
-
-    if (!mFlushed) {
-        flush();
-    }
-
-    if (mMppCtx) {
-        mpp_destroy(mMppCtx);
-        mMppCtx = nullptr;
     }
 
     if (mFrmGrp != nullptr) {
         mpp_buffer_group_put(mFrmGrp);
         mFrmGrp = nullptr;
     }
+
+    if (mMppCtx) {
+        mpp_destroy(mMppCtx);
+        mMppCtx = nullptr;
+    }
 }
 
 c2_status_t C2RKMpiDec::onFlush_sm() {
-    return flush();
-}
-
-c2_status_t C2RKMpiDec::flush() {
     c2_status_t ret = C2_OK;
 
     c2_info_f("in");
 
-    clearMyBuffers();
-    mPtsMaps.clear();
-
     mOutputEos = false;
-    mSignalledOutputEos = false;
+    mSignalledInputEos = false;
+    mSignalledError = false;
 
-    C2StreamBlockCountInfo::output blockCount(0u);
-    std::vector<std::unique_ptr<C2SettingResult>> failures;
-    ret = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
-    if (ret != C2_OK) {
-        c2_err_f("failed to config block count, err %d", ret);
-        return C2_CORRUPTED;
-    }
+    mWorkQueue.clear();
+    clearOutBuffers();
 
     if (mFrmGrp) {
         mpp_buffer_group_clear(mFrmGrp);
@@ -585,8 +554,7 @@ c2_status_t C2RKMpiDec::flush() {
 }
 
 c2_status_t C2RKMpiDec::initDecoder() {
-    c2_status_t ret = C2_OK;
-    MPP_RET     err = MPP_OK;
+    MPP_RET err = MPP_OK;
 
     c2_info_f("in");
 
@@ -601,13 +569,21 @@ c2_status_t C2RKMpiDec::initDecoder() {
     err = mpp_create(&mMppCtx, &mMppMpi);
     if (err != MPP_OK) {
         c2_err("failed to mpp_create, ret %d", err);
-        goto __FAILED;
+        goto error;
+    }
+
+    // TODO: workround: CTS-CodecDecoderTest
+    // testFlushNative[15(c2.rk.mpeg2.decoder_video/mpeg2)
+    if (mCodingType == MPP_VIDEO_CodingMPEG2) {
+        uint32_t deinterlace = 0, split = 1;
+        mMppMpi->control(mMppCtx, MPP_DEC_SET_ENABLE_DEINTERLACE, &deinterlace);
+        mMppMpi->control(mMppCtx, MPP_DEC_SET_PARSER_SPLIT_MODE, &split);
     }
 
     err = mpp_init(mMppCtx, MPP_CTX_DEC, mCodingType);
     if (err != MPP_OK) {
         c2_err("failed to mpp_init, ret %d", err);
-        goto __FAILED;
+        goto error;
     }
 
     {
@@ -620,7 +596,7 @@ c2_status_t C2RKMpiDec::initDecoder() {
         mMppMpi->control(mMppCtx, MPP_DEC_SET_FRAME_INFO, (MppParam)frame);
 
         /*
-         * command "set-frame-info" may failed to provide stride info in old
+         * Command "set-frame-info" may failed to provide stride info in old
          * mpp version, so config unaligned resolution for stride and then
          * info-change will sent to transmit correct stride.
          */
@@ -637,15 +613,6 @@ c2_status_t C2RKMpiDec::initDecoder() {
 
         c2_info("init: get stride [%d:%d]", mHorStride, mVerStride);
 
-        /* config output reference buffer count */
-        std::vector<std::unique_ptr<C2SettingResult>> failures;
-        C2StreamMaxReferenceCountTuning::output maxRefCount(0, kMaxReferenceCount);
-        ret = mIntf->config({&maxRefCount}, C2_MAY_BLOCK, &failures);
-        if (ret != C2_OK) {
-            c2_err_f("failed to config max referent count, ret 0x%x", ret);
-            goto __FAILED;
-        }
-
         mpp_frame_deinit(&frame);
     }
 
@@ -658,7 +625,7 @@ c2_status_t C2RKMpiDec::initDecoder() {
         err = mpp_buffer_group_get_external(&mFrmGrp, MPP_BUFFER_TYPE_ION);
         if (err != MPP_OK) {
             c2_err_f("failed to get buffer_group, err %d", err);
-            goto __FAILED;
+            goto error;
         }
         mMppMpi->control(mMppCtx, MPP_DEC_SET_EXT_BUF_GROUP, mFrmGrp);
     }
@@ -667,7 +634,7 @@ c2_status_t C2RKMpiDec::initDecoder() {
 
     return C2_OK;
 
-__FAILED:
+error:
     if (mMppCtx) {
         mpp_destroy(mMppCtx);
         mMppCtx = nullptr;
@@ -695,7 +662,8 @@ void C2RKMpiDec::fillEmptyWork(const std::unique_ptr<C2Work> &work) {
 void C2RKMpiDec::finishWork(
         uint64_t index,
         const std::unique_ptr<C2Work> &work,
-        const std::shared_ptr<C2GraphicBlock> block) {
+        const std::shared_ptr<C2GraphicBlock> block,
+        bool delayOutput) {
     if (!block) {
         c2_err("empty block index %d", index);
         return;
@@ -710,8 +678,7 @@ void C2RKMpiDec::finishWork(
             mCodingType == MPP_VIDEO_CodingHEVC ||
             mCodingType == MPP_VIDEO_CodingMPEG2) {
             IntfImpl::Lock lock = mIntf->lock();
-            if (buffer)
-                buffer->setInfo(mIntf->getColorAspects_l());
+            buffer->setInfo(mIntf->getColorAspects_l());
         }
     }
 
@@ -745,27 +712,10 @@ void C2RKMpiDec::finishWork(
     auto fillWork = [buffer](const std::unique_ptr<C2Work> &work) {
         work->worklets.front()->output.flags = (C2FrameData::flags_t)0;
         work->worklets.front()->output.buffers.clear();
-        if(buffer)
-            work->worklets.front()->output.buffers.push_back(buffer);
+        work->worklets.front()->output.buffers.push_back(buffer);
         work->worklets.front()->output.ordinal = work->input.ordinal;
         work->workletsProcessed = 1u;
     };
-
-    if (!mBufferMode) {
-        C2StreamBlockCountInfo::output blockCount(0u);
-        std::vector<std::unique_ptr<C2Param>> params;
-        c2_status_t err = intf()->query_vb({ &blockCount }, {},
-                                           C2_DONT_BLOCK, &params);
-
-        blockCount.value--;
-        std::vector<std::unique_ptr<C2SettingResult>> failures;
-        err = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
-        if (err != C2_OK) {
-            c2_err_f("failed to config blockCount, ret 0x%x", err);
-        } else {
-            c2_trace_f("config block count %d", blockCount.value);
-        }
-    }
 
     if (work && c2_cntr64_t(index) == work->input.ordinal.frameIndex) {
         bool eos = ((work->input.flags & C2FrameData::FLAG_END_OF_STREAM) != 0);
@@ -781,7 +731,7 @@ void C2RKMpiDec::finishWork(
             fillWork(work);
         }
     } else {
-        finish(index, fillWork);
+        finish(index, fillWork, delayOutput);
     }
 }
 
@@ -789,9 +739,6 @@ c2_status_t C2RKMpiDec::drainInternal(
         uint32_t drainMode,
         const std::shared_ptr<C2BlockPool> &pool,
         const std::unique_ptr<C2Work> &work) {
-    c2_status_t ret = C2_OK;
-    uint32_t retry = 0;
-
     c2_info_f("in");
 
     if (drainMode == NO_DRAIN) {
@@ -803,21 +750,39 @@ c2_status_t C2RKMpiDec::drainInternal(
         return C2_OMITTED;
     }
 
-    while (!mOutputEos){
-        ret = ensureBlockState(pool);
+    c2_status_t ret = C2_OK;
+    OutWorkEntry entry;
+    uint32_t kMaxRetryNum = 20;
+    uint32_t retry = 0;
+
+    while (true){
+        ret = ensureDecoderState(pool);
         if (ret != C2_OK) {
-            c2_warn_f("failed to ensure block buffer, ret %d", ret);
+            mSignalledError = true;
+            work->workletsProcessed = 1u;
+            work->result = C2_CORRUPTED;
+            return C2_CORRUPTED;
         }
-        ret = decode_getoutframe(work);
-        usleep(5 * 1000);
 
-        // avoid infinite loop
-        if ((retry++) > kMaxRetryNum)
-            mOutputEos = true;
+        ret = getoutframe(&entry);
+        if (ret == C2_OK && entry.outblock) {
+            finishWork(entry.frameIndex, work, entry.outblock);
+        }
 
-        if (mOutputEos)
+        if (mOutputEos) {
             fillEmptyWork(work);
+            break;
+        }
+
+        if ((++retry) > kMaxRetryNum) {
+            mOutputEos = true;
+            c2_warn("drain: eos not found, force set output EOS.");
+        } else {
+            usleep(5 * 1000);
+        }
     }
+
+    c2_info_f("out");
 
     return C2_OK;
 }
@@ -827,7 +792,6 @@ c2_status_t C2RKMpiDec::drain(
         const std::shared_ptr<C2BlockPool> &pool) {
     return drainInternal(drainMode, pool, nullptr);
 }
-
 
 void C2RKMpiDec::process(
         const std::unique_ptr<C2Work> &work,
@@ -852,16 +816,17 @@ void C2RKMpiDec::process(
         }
     }
 
-    if (mSignalledOutputEos) {
-        c2_err("mSignalledOutputEos is true, return!");
+    if (mSignalledInputEos || mSignalledError) {
         work->result = C2_BAD_VALUE;
         return;
     }
 
+    uint8_t *inData = nullptr;
     size_t inSize = 0u;
     C2ReadView rView = mDummyReadView;
     if (!work->input.buffers.empty()) {
         rView = work->input.buffers[0]->data().linearBlocks().front().map().get();
+        inData = const_cast<uint8_t *>(rView.data());
         inSize = rView.capacity();
         if (inSize && rView.error()) {
             c2_err("failed to read rWiew, error %d", rView.error());
@@ -870,57 +835,76 @@ void C2RKMpiDec::process(
         }
     }
 
-    c2_trace("in buffer attr. size %zu timestamp %d frameindex %d, flags %x",
-             inSize, (int)work->input.ordinal.timestamp.peeku(),
-             (int)work->input.ordinal.frameIndex.peeku(), work->input.flags);
+    uint32_t flags = work->input.flags;
+    uint64_t frameIndex = work->input.ordinal.frameIndex.peekull();
+    uint64_t timestamp = work->input.ordinal.timestamp.peekll();
 
-    bool eos = ((work->input.flags & C2FrameData::FLAG_END_OF_STREAM) != 0);
-    if (inSize == 0 && !eos) {
+    c2_trace("in buffer attr. size %zu timestamp %lld frameindex %lld, flags %x",
+             inSize, timestamp, frameIndex, flags);
+
+    bool eos = ((flags & C2FrameData::FLAG_END_OF_STREAM) != 0);
+    bool hasPicture = false;
+    bool delayOutput = false;
+    OutWorkEntry entry;
+
+    err = ensureDecoderState(pool);
+    if (err != C2_OK) {
+        mSignalledError = true;
+        work->workletsProcessed = 1u;
+        work->result = C2_CORRUPTED;
+        return;
+    }
+
+    // may block, quit util enqueue success.
+    err = sendpacket(inData, inSize, frameIndex, timestamp, flags);
+    if (err != C2_OK) {
+        c2_warn("failed to enqueue packet, pts %lld", timestamp);
+    } else if (flags & (C2FrameData::FLAG_CODEC_CONFIG | FLAG_NON_DISPLAY_FRAME)) {
         fillEmptyWork(work);
         return;
-    } else if (inSize == 0 && eos) {
-        c2_info("get empty input work with eos");
-        mSignalledOutputEos = true;
-    }
-
-    uint32_t pkt_done = 0;
-    uint32_t retry = 0;
-    //bool hasPicture = false;
-
-    err = ensureBlockState(pool);
-    if (err != C2_OK) {
-        // TODO failed to ensure bloclk state
-        c2_warn_f("failed to ensureBlockState, err %d", err);
-    }
-
-    do {
-        err = decode_sendstream(work);
-        if (err != C2_OK) {
-            // the work should be try again
-            c2_trace("decode_sendstream failed, retry count %d", retry);
-            if((retry++) > kMaxRetryNum) pkt_done = 1;
-            usleep(5 * 1000);
-        } else {
-            pkt_done = 1;
+    } else {
+        // TODO workround: CTS-CodecDecoderTest
+        // testFlushNative[15(c2.rk.mpeg2.decoder_video/mpeg2)
+        if (mLastPts != timestamp) {
+            mLastPts = timestamp;
+        } else if (mCodingType == MPP_VIDEO_CodingMPEG2) {
+            if (!eos) {
+                fillEmptyWork(work);
+                return;
+            }
         }
-    } while (!pkt_done);
-
-    err = decode_getoutframe(work);
-    if (err != C2_OK) {
-        // nothing to do
-        c2_trace_f("decode_getoutframe failed!");
     }
 
-    if (eos && !mOutputEos) {
+outframe:
+    if (!eos) {
+        err = getoutframe(&entry);
+        if (err == C2_OK) {
+            hasPicture = true;
+        } else if (err == C2_CORRUPTED) {
+            mSignalledError = true;
+            work->workletsProcessed = 1u;
+            work->result = C2_CORRUPTED;
+            return;
+        }
+    }
+
+    if (eos) {
         drainInternal(DRAIN_COMPONENT_WITH_EOS, pool, work);
-        mSignalledOutputEos = true;
-    } else if (eos && mOutputEos) {
-        fillEmptyWork(work);
-    } else if (retry > kMaxRetryNum) {
-        fillEmptyWork(work);
-    }
+        mSignalledInputEos = true;
+    } else if (hasPicture) {
+        finishWork(entry.frameIndex, work, entry.outblock, delayOutput);
+        /* Avoid stock frame, continue to search available output */
+        ensureDecoderState(pool);
+        hasPicture = false;
 
-    c2_trace_f("out");
+        /* output pending work after the C2Work in process return. It is
+           neccessary to output work sequentially, otherwise the output
+           captured by the user may be discontinuous */
+        if (entry.frameIndex == frameIndex) {
+            delayOutput = true;
+        }
+        goto outframe;
+    }
 }
 
 void C2RKMpiDec::getVuiParams(MppFrame frame) {
@@ -967,120 +951,78 @@ void C2RKMpiDec::getVuiParams(MppFrame frame) {
     }
 }
 
-c2_status_t C2RKMpiDec::decode_sendstream(const std::unique_ptr<C2Work> &work) {
+c2_status_t C2RKMpiDec::sendpacket(
+        uint8_t *data, size_t size, uint64_t frmIndex, uint64_t pts, uint32_t flags) {
     c2_status_t ret = C2_OK;
-    MPP_RET err = MPP_OK;
-
     MppPacket packet = nullptr;
-    uint8_t *inData = nullptr;
-    size_t inSize = 0u;
 
-    C2ReadView rView = mDummyReadView;
-    if (!work->input.buffers.empty()) {
-        rView = work->input.buffers[0]->data().linearBlocks().front().map().get();
-        inData = const_cast<uint8_t *>(rView.data());
-        inSize = rView.capacity();
-    }
-
-    uint64_t frmIndex = work->input.ordinal.frameIndex.peekull();
-    uint64_t pts = work->input.ordinal.timestamp.peekll();
-
-    mpp_packet_init(&packet, inData, inSize);
+    mpp_packet_init(&packet, data, size);
     mpp_packet_set_pts(packet, pts);
-    mpp_packet_set_pos(packet, inData);
-    mpp_packet_set_length(packet, inSize);
+    mpp_packet_set_pos(packet, data);
+    mpp_packet_set_length(packet, size);
 
-    if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
+    if (flags & C2FrameData::FLAG_END_OF_STREAM) {
         c2_info("send input eos");
         mpp_packet_set_eos(packet);
     }
 
-    if (work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) {
+    if (flags & C2FrameData::FLAG_CODEC_CONFIG) {
         mpp_packet_set_extra_data(packet);
     }
 
-    err = mMppMpi->decode_put_packet(mMppCtx, packet);
-    if (MPP_OK != err) {
-        ret = C2_NOT_FOUND;
-    } else {
-        c2_trace("send pkt index %lld pts %lld size %d", frmIndex, pts, inSize);
+    MPP_RET err = MPP_OK;
+    uint32_t kMaxRetryNum = 20;
+    uint32_t retry = 0;
 
-        // TODO: CtsMediaV2TestCases: return this work when timestamps repeat
-        if (!(work->input.flags &
-                (C2FrameData::FLAG_CODEC_CONFIG | FLAG_NON_DISPLAY_FRAME))) {
-            mPtsMaps[frmIndex] = pts;
-            if (mLastPts != pts) {
-                mLastPts = pts;
-            } else {
-                if (mCodingType == MPP_VIDEO_CodingMPEG2) {
-                    fillEmptyWork(work);
-                }
+    while (true) {
+        err = mMppMpi->decode_put_packet(mMppCtx, packet);
+        if (err == MPP_OK) {
+            c2_trace("send packet pts %lld size %d", pts, size);
+            if (!(flags & (C2FrameData::FLAG_CODEC_CONFIG | FLAG_NON_DISPLAY_FRAME))) {
+                mWorkQueue.insert(std::make_pair(frmIndex, pts));
             }
+            break;
         }
-        if ((work->input.flags & C2FrameData::FLAG_CODEC_CONFIG) != 0) {
-            fillEmptyWork(work);
+
+        if ((++retry) > kMaxRetryNum) {
+            ret = C2_CORRUPTED;
+            break;
         }
-        if (mCodingType == MPP_VIDEO_CodingVP9) {
-            if ((work->input.flags & FLAG_NON_DISPLAY_FRAME) != 0) {
-                fillEmptyWork(work);
-            }
-        }
+        usleep(5 * 1000);
     }
 
-    if (packet) {
-        mpp_packet_deinit(&packet);
-        packet = nullptr;
-    }
+    mpp_packet_deinit(&packet);
 
     return ret;
 }
 
-c2_status_t C2RKMpiDec::decode_getoutframe(const std::unique_ptr<C2Work> &work) {
+c2_status_t C2RKMpiDec::getoutframe(OutWorkEntry *entry) {
     c2_status_t ret = C2_OK;
     MPP_RET err = MPP_OK;
     MppFrame frame = nullptr;
 
+    uint64_t outIndex = 0;
+    std::shared_ptr<C2GraphicBlock> outblock = nullptr;
+
     err = mMppMpi->decode_get_frame(mMppCtx, &frame);
     if (MPP_OK != err || !frame) {
-        c2_trace("failed to get output frame, ret %d", err);
         return C2_NOT_FOUND;
     }
 
-    uint32_t width   = mpp_frame_get_width(frame);
-    uint32_t height  = mpp_frame_get_height(frame);
-    uint32_t wstride = mpp_frame_get_hor_stride(frame);
-    uint32_t hstride = mpp_frame_get_ver_stride(frame);
-    uint32_t errInfo = mpp_frame_get_errinfo(frame);
-    int64_t  pts     = mpp_frame_get_pts(frame);
-    uint32_t eos     = mpp_frame_get_eos(frame);
+    uint32_t width  = mpp_frame_get_width(frame);
+    uint32_t height = mpp_frame_get_height(frame);
+    uint32_t hstride = mpp_frame_get_hor_stride(frame);
+    uint32_t vstride = mpp_frame_get_ver_stride(frame);
+    MppFrameFormat format = mpp_frame_get_fmt(frame);
 
     if (mpp_frame_get_info_change(frame)) {
-        MppFrameFormat format = mpp_frame_get_fmt(frame);
-
-        c2_info("info-change with old dimens [%d:%d] fmt %d",
-                mWidth, mHeight, mColorFormat);
-        c2_info("info-change with new dimens [%d:%d] stride [%d:%d] fmt %d",
-                width, height, wstride, hstride, format);
-
-        mWidth = width;
-        mHeight = height;
-        mHorStride = wstride;
-        mVerStride = hstride;
-        mColorFormat = format;
-
-        clearMyBuffers();
+        c2_info("info-change with old dimensions(%dx%d) stride(%dx%d) fmt %d", \
+                mWidth, mHeight, mHorStride, mVerStride, mColorFormat);
+        c2_info("info-change with new dimensions(%dx%d) stride(%dx%d) fmt %d", \
+                width, height, hstride, vstride, format);
 
         if (!mBufferMode) {
-            C2StreamPictureSizeInfo::output size(0u, mWidth, mHeight);
-            C2StreamBlockCountInfo::output blockCount(0u);
-            std::vector<std::unique_ptr<C2SettingResult>> failures;
-            ret = mIntf->config({ &size, &blockCount },
-                                C2_MAY_BLOCK, &failures);
-            if (ret != C2_OK) {
-                c2_err_f("failed to config block info, err %d", ret);
-                goto _EXIT;
-            }
-
+            clearOutBuffers();
             mpp_buffer_group_clear(mFrmGrp);
         }
 
@@ -1092,67 +1034,69 @@ c2_status_t C2RKMpiDec::decode_getoutframe(const std::unique_ptr<C2Work> &work) 
         if (err) {
             c2_err_f("failed to set info-change ready, ret %d", ret);
             ret = C2_CORRUPTED;
-            goto _EXIT;
+            goto exit;
         }
+
+        mWidth = width;
+        mHeight = height;
+        mHorStride = hstride;
+        mVerStride = vstride;
+        mColorFormat = format;
 
         ret = C2_NO_MEMORY;
     } else {
-        c2_trace("get one frm info [%d:%d] stride [%d:%d] pts %lld err %d eos %d",
-                 width, height, wstride, hstride, pts, errInfo, eos);
+        uint32_t err = mpp_frame_get_errinfo(frame);
+        int64_t  pts = mpp_frame_get_pts(frame);
+        uint32_t eos = mpp_frame_get_eos(frame);
+        MppBuffer mppBuffer = mpp_frame_get_buffer(frame);
 
-        int64_t workIndex = -1ll;
-        std::shared_ptr<C2GraphicBlock> block = nullptr;
+        c2_trace("get one frame [%d:%d] stride [%d:%d] pts %lld err %d eos %d",
+                 width, height, hstride, vstride, pts, err, eos);
 
         if (eos) {
             c2_info("get output eos.");
             mOutputEos = true;
-            goto _EXIT;
-        }
-
-        for (auto it = mPtsMaps.begin(); it != mPtsMaps.end(); it++) {
-            if (pts == it->second) {
-                workIndex = it->first;
-                mPtsMaps.erase(it);
-                break;
-            }
-        }
-        if (workIndex == -1){
-            c2_err("can't find timestamp %lld", pts);
-            for (auto it = mPtsMaps.begin(); it != mPtsMaps.end(); it++) {
-                if (0 == it->second) {
-                    workIndex = it->first;
-                    mPtsMaps.erase(it);
-                    break;
-                }
-            }
+            // ignore null frame with eos
+            if (!pts) goto exit;
         }
 
         if (mBufferMode) {
-            RgaParam srcParam, dstParam;
-            auto c2Handle = mOutBlock->handle();
-            int32_t dstFd = c2Handle->data[0];
-            int32_t srcFd = mpp_buffer_get_fd(mpp_frame_get_buffer(frame));
+            bool useRga = (width * height >= 1280 * 720);
 
-            if (dstFd == -1) {
-                c2_err("get empty output block in bufferMode");
-                goto _EXIT;
+            if (useRga) {
+                RgaParam src, dst;
+
+                int32_t srcFd = mpp_buffer_get_fd(mppBuffer);
+                auto c2Handle = mOutBlock->handle();
+                int32_t dstFd = c2Handle->data[0];
+
+                C2RKRgaDef::paramInit(&src, srcFd, width, height, hstride, vstride);
+                C2RKRgaDef::paramInit(&dst, dstFd, width, height, hstride, vstride);
+                if (!C2RKRgaDef::nv12Copy(src, dst)) {
+                    c2_err("faild to copy output to dstBlock on buffer mode.");
+                    ret = C2_CORRUPTED;
+                    goto exit;
+                }
+            } else {
+                C2GraphicView wView = mOutBlock->map().get();
+                uint8_t *dst = wView.data()[C2PlanarLayout::PLANE_Y];
+                uint8_t *src = (uint8_t*)mpp_buffer_get_ptr(mppBuffer);
+
+                memcpy(dst, src, hstride * vstride * 3 / 2);
             }
 
-            C2RKRgaDef::paramInit(&srcParam, srcFd, width, height, wstride, hstride);
-            C2RKRgaDef::paramInit(&dstParam, dstFd, width, height, wstride, hstride);
-            if (!C2RKRgaDef::nv12Copy(srcParam, dstParam)) {
-                c2_err("faild to convert nv12");
-            }
-            block = mOutBlock;
+            outblock = mOutBlock;
         } else {
-            MyC2Buffer *buffer = findMyBuffer(mpp_frame_get_buffer(frame));
-            if (!buffer || !buffer->block){
-                c2_err("failed to find blockBuffer");
-                goto _EXIT;
+            OutBuffer *outBuffer = findOutBuffer(mppBuffer);
+            if (!outBuffer) {
+                c2_err("failed to find output buffer");
+                ret = C2_CORRUPTED;
+                goto exit;
             }
-            buffer->site = MY_BUFFER_SITE_BY_C2;
-            mpp_buffer_inc_ref(mpp_frame_get_buffer(frame));
-            block = buffer->block;
+            mpp_buffer_inc_ref(mppBuffer);
+            outBuffer->site = BUFFER_SITE_BY_C2;
+
+            outblock = outBuffer->block;
         }
 
         if (mCodingType == MPP_VIDEO_CodingAVC ||
@@ -1162,15 +1106,33 @@ c2_status_t C2RKMpiDec::decode_getoutframe(const std::unique_ptr<C2Work> &work) 
             getVuiParams(frame);
         }
 
-        c2_trace("frame index %lld", workIndex);
-        finishWork(workIndex, work, block);
+        // find frameIndex from pts map.
+        for (auto it = mWorkQueue.begin(); it != mWorkQueue.end(); it++) {
+            if (pts == it->second) {
+                outIndex = it->first;
+                mWorkQueue.erase(it);
+                break;
+            }
+        }
+
+        if (outIndex == 0) {
+            c2_warn("get unexpect pts %lld, skip this frame", pts);
+            if (mppBuffer) {
+                mpp_buffer_put(mppBuffer);
+            }
+        }
+
+        ret = C2_OK;
     }
 
-_EXIT:
+exit:
     if (frame) {
         mpp_frame_deinit(&frame);
         frame = nullptr;
     }
+
+    entry->outblock = outblock;
+    entry->frameIndex = outIndex;
 
     return ret;
 }
@@ -1210,20 +1172,20 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
         return pHandle.size;
     };
 
-    MyC2Buffer *buffer = findMyBuffer(bqSlot);
+    OutBuffer *buffer = findOutBuffer(bqSlot);
     if (buffer) {
         /* commit this buffer back to mpp */
-        MppBuffer mppBuffer = buffer->mBuffer;
+        MppBuffer mppBuffer = buffer->mppBuffer;
         if (mppBuffer) {
             mpp_buffer_put(mppBuffer);
         }
         buffer->block = block;
-        buffer->site = MY_BUFFER_SITE_BY_MPI;
+        buffer->site = BUFFER_SITE_BY_MPI;
 
-        c2_trace("put this buffer: slot %d fd %d", bqSlot, fd);
+        c2_trace("put this buffer: slot %d fd %d buf %p", bqSlot, fd, mppBuffer);
     } else {
         /* register this buffer to mpp group */
-        MppBuffer mppBuffer = nullptr;
+        MppBuffer mppBuffer;
         MppBufferInfo info;
         memset(&info, 0, sizeof(info));
 
@@ -1236,52 +1198,38 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
         mpp_buffer_import_with_tag(mFrmGrp, &info,
                                    &mppBuffer, "codec2", __FUNCTION__);
 
-        c2_trace("import this buffer: slot %d fd %d size %d", bqSlot, info.fd, info.size);
-
-        MyC2Buffer *buffer = new MyC2Buffer();
+        OutBuffer *buffer = new OutBuffer;
         buffer->index = bqSlot;
-        buffer->mBuffer = mppBuffer;
+        buffer->mppBuffer = mppBuffer;
         buffer->block = block;
-        buffer->site = MY_BUFFER_SITE_BY_MPI;
-
+        buffer->site = BUFFER_SITE_BY_MPI;
         mpp_buffer_put(mppBuffer);
-        mC2Buffers.push(buffer);
+
+        mOutBuffers.push(buffer);
+
+        c2_trace("import this buffer: slot %d fd %d size %d buf %p", bqSlot,
+                 fd, info.size, mppBuffer);
     }
 
     return C2_OK;
 }
 
-c2_status_t C2RKMpiDec::ensureBlockState(
+c2_status_t C2RKMpiDec::ensureDecoderState(
         const std::shared_ptr<C2BlockPool> &pool) {
     c2_status_t ret = C2_OK;
 
-    /* query block info */
-    C2StreamMaxReferenceCountTuning::output maxRefCount(0u);
-    C2StreamBlockCountInfo::output blockCount(0u);
-    std::vector<std::unique_ptr<C2Param>> params;
-    ret = intf()->query_vb(
-            { &maxRefCount, &blockCount },
-            {},
-            C2_DONT_BLOCK,
-            &params);
-    if (ret) {
-        c2_err_f("failed to query BlockInfo, err %d", ret);
-        return ret;
-    }
+    uint32_t blockW = mHorStride;
+    uint32_t blockH = mVerStride;
 
-    uint32_t FrameW = mHorStride;
-    uint32_t FrameH = mVerStride;
-    uint32_t blockW = mWidth;
-    uint32_t blockH = FrameH;
+    uint64_t usage  = RK_GRALLOC_USAGE_SPECIFY_STRIDE;
+    uint32_t format = C2RKMediaUtils::colorFormatMpiToAndroid(mColorFormat);
 
-    uint64_t strideUsage = C2RKMediaUtils::getStrideUsage(blockW, FrameW);
-    uint64_t usage = (GRALLOC_USAGE_SW_READ_OFTEN |
-                      GRALLOC_USAGE_SW_WRITE_OFTEN |
-                      strideUsage);
-
-    uint32_t format = HAL_PIXEL_FORMAT_YCrCb_NV12;
-    if (!C2RKMediaUtils::colorFormatMpiToAndroid(mColorFormat, &format)) {
-        c2_err_f("failed to convert color format.");
+    // workround for tencent-video, the application can not deal with crop
+    // correctly, so use actual dimention when fetch block, make sure that
+    // the output buffer carries all info needed.
+    if (format == HAL_PIXEL_FORMAT_YCrCb_NV12 && mWidth != mHorStride) {
+        blockW = mWidth;
+        usage = C2RKMediaUtils::getStrideUsage(mWidth, mHorStride);
     }
 
     if (blockW <= 0 || blockH <= 0) {
@@ -1307,15 +1255,15 @@ c2_status_t C2RKMpiDec::ensureBlockState(
                 c2_err("failed to fetchGraphicBlock, err %d", ret);
                 return ret;
             }
-
-            c2_trace("provided (%dx%d) required (%dx%d)",
-                     mOutBlock->width(), mOutBlock->height(), blockW, blockH);
+            c2_trace("required (%dx%d) usage 0x%llx format 0x%x , fetch done",
+                     blockW, blockH, usage, format);
         }
     } else {
-        uint32_t count = 0;
         std::shared_ptr<C2GraphicBlock> outblock;
+        uint32_t count = kMaxReferenceCount - getOutBufferCountOwnByMpi();
 
-        for (int i = 0; i < maxRefCount.value - blockCount.value; i++) {
+        uint32_t i = 0;
+        for (i = 0; i < count; i++) {
             ret = pool->fetchGraphicBlock(blockW, blockH, format,
                                           C2AndroidMemoryUsage::FromGrallocUsage(usage),
                                           &outblock);
@@ -1329,19 +1277,9 @@ c2_status_t C2RKMpiDec::ensureBlockState(
                 c2_err("register buffer to mpp failed with status %d", ret);
                 break;
             }
-            count++;
         }
-
-        c2_trace("required (%dx%d), fetch %d/%d", blockW, blockH,
-                 count, (maxRefCount.value - blockCount.value));
-
-        blockCount.value += count;
-        std::vector<std::unique_ptr<C2SettingResult>> failures;
-        ret = mIntf->config({&blockCount}, C2_MAY_BLOCK, &failures);
-        if (ret != C2_OK) {
-            c2_err_f("failed to config block count, err %d", ret);
-            return C2_CORRUPTED;
-        }
+        c2_trace("required (%dx%d) usage 0x%llx format 0x%x, fetch %d/%d",
+                 blockW, blockH, usage, format, i, count);
     }
 
     return ret;

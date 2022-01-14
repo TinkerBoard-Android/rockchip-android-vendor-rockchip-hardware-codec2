@@ -44,10 +44,15 @@ bool C2RKRgaDef::rgbToNv12(RgaParam srcParam, RgaParam dstParam) {
 
     RockchipRga& rkRga(RockchipRga::get());
 
-    c2_trace("RgaParam-src fd %d rect[%d, %d, %d, %d]", srcParam.fd,
+    c2_trace("rga src fd %d rect[%d, %d, %d, %d]", srcParam.fd,
              srcParam.width, srcParam.height, srcParam.wstride, srcParam.hstride);
-    c2_trace("RgaParam-dst fd %d rect[%d, %d, %d, %d]", dstParam.fd,
+    c2_trace("rga dst fd %d rect[%d, %d, %d, %d]", dstParam.fd,
              dstParam.width, dstParam.height, dstParam.wstride, dstParam.hstride);
+
+    if ((srcParam.wstride % 4) != 0) {
+        c2_warn("err yuv not align to 4");
+        return true;
+    }
 
     memset((void*)&src, 0, sizeof(rga_info_t));
     memset((void*)&dst, 0, sizeof(rga_info_t));
@@ -73,10 +78,15 @@ bool C2RKRgaDef::nv12Copy(RgaParam srcParam, RgaParam dstParam) {
 
     RockchipRga& rkRga(RockchipRga::get());
 
-    c2_trace("RgaParam-src fd %d rect[%d, %d, %d, %d]", srcParam.fd,
+    c2_trace("rga src fd %d rect[%d, %d, %d, %d]", srcParam.fd,
              srcParam.width, srcParam.height, srcParam.wstride, srcParam.hstride);
-    c2_trace("RgaParam-dst fd %d rect[%d, %d, %d, %d]", dstParam.fd,
+    c2_trace("rga dst fd %d rect[%d, %d, %d, %d]", dstParam.fd,
              dstParam.width, dstParam.height, dstParam.wstride, dstParam.hstride);
+
+    if ((srcParam.wstride % 4) != 0) {
+        c2_warn("err yuv not align to 4");
+        return true;
+    }
 
     memset((void*)&src, 0, sizeof(rga_info_t));
     memset((void*)&dst, 0, sizeof(rga_info_t));

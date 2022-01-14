@@ -120,7 +120,8 @@ protected:
      */
     void finish(
             uint64_t frameIndex,
-            std::function<void(const std::unique_ptr<C2Work> &)> fillWork);
+            std::function<void(const std::unique_ptr<C2Work> &)> fillWork,
+            bool delayOutput = false);
 
     void finish(
         std::unique_ptr<C2Work> &work,
@@ -161,7 +162,14 @@ protected:
     C2ReadView mDummyReadView;
 
 private:
+    struct WorkInfo {
+        uint64_t frameIndex;
+        std::function<void(const std::unique_ptr<C2Work> &)> fillWork;
+    };
+
     const std::shared_ptr<C2ComponentInterface> mIntf;
+
+    std::list<WorkInfo> mReadyWork;
 
     class WorkHandler : public AHandler {
     public:

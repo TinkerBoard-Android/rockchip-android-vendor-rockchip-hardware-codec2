@@ -63,9 +63,9 @@ public:
     static bool getMimeFromComponentName(C2String componentName, C2String *mime);
     static bool getKindFromComponentName(C2String componentName, C2Component::kind_t *kind);
     static bool getDomainFromComponentName(C2String componentName, C2Component::domain_t *domain);
-    static bool colorFormatMpiToAndroid(const uint32_t format, uint32_t *androidFormat);
     static bool checkHWSupport(MppCtxType type, MppCodingType codingType);
-    static int64_t getStrideUsage(int32_t width, int32_t stride);
+    static int32_t colorFormatMpiToAndroid(const uint32_t format);
+    static uint64_t getStrideUsage(int32_t width, int32_t stride);
 };
 
 #endif  // ANDROID_C2_RK_MEDIA_UTILS_H_
