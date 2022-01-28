@@ -3,9 +3,11 @@ cc_library_static {
     vendor: true,
 
     srcs: [
-        "C2RKRgaDef.cpp",
+        "C2RKChips.cpp",
         "C2RKLog.cpp",
         "C2RKEnv.cpp",
+        "C2RKFbcDef.cpp",
+        "C2RKRgaDef.cpp",
         "C2RKMediaUtils.cpp",
     ],
 

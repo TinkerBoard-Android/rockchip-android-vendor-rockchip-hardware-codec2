@@ -30,6 +30,7 @@
 #include "C2RKLog.h"
 #include "C2RKMediaUtils.h"
 #include "C2RKRgaDef.h"
+#include "C2RKFbcDef.h"
 #include "C2RKVersion.h"
 #include "C2RKEnv.h"
 
@@ -587,12 +588,25 @@ c2_status_t C2RKMpiDec::initDecoder() {
     }
 
     {
-        MppFrame frame = nullptr;
+        MppFrame frame  = nullptr;
+        uint32_t mppFmt = mColorFormat;
+
+        /* user can't process fbc output on bufferMode */
+        if (!mBufferMode && (mWidth * mHeight > 1920 * 1080)) {
+            mFbcCfg.mode = C2RKFbcDef::getFbcOutputMode(mCodingType);
+            if (mFbcCfg.mode) {
+                c2_info("use mpp fbc output mode");
+                mppFmt |= MPP_FRAME_FBC_AFBC_V2;
+                mMppMpi->control(mMppCtx, MPP_DEC_SET_OUTPUT_FORMAT, (MppParam)&mppFmt);
+            }
+        } else {
+            mFbcCfg.mode = 0;
+        }
 
         mpp_frame_init(&frame);
         mpp_frame_set_width(frame, mWidth);
         mpp_frame_set_height(frame, mHeight);
-        mpp_frame_set_fmt(frame, mColorFormat);
+        mpp_frame_set_fmt(frame, (MppFrameFormat)mppFmt);
         mMppMpi->control(mMppCtx, MPP_DEC_SET_FRAME_INFO, (MppParam)frame);
 
         /*
@@ -628,6 +642,14 @@ c2_status_t C2RKMpiDec::initDecoder() {
             goto error;
         }
         mMppMpi->control(mMppCtx, MPP_DEC_SET_EXT_BUF_GROUP, mFrmGrp);
+    }
+
+    /* fbc decode output has padding inside, set crop before display */
+    if (mFbcCfg.mode) {
+        C2RKFbcDef::getFbcOutputOffset(mCodingType,
+                                       &mFbcCfg.paddingX,
+                                       &mFbcCfg.paddingY);
+        c2_info("fbc padding offset(%d, %d)", mFbcCfg.paddingX, mFbcCfg.paddingY);
     }
 
     mStarted = true;
@@ -669,8 +691,13 @@ void C2RKMpiDec::finishWork(
         return;
     }
 
+    uint32_t left = mFbcCfg.mode ? mFbcCfg.paddingX : 0;
+    uint32_t top  = mFbcCfg.mode ? mFbcCfg.paddingY : 0;
+
     std::shared_ptr<C2Buffer> buffer
-            = createGraphicBuffer(std::move(block), C2Rect(mWidth, mHeight));
+            = createGraphicBuffer(std::move(block),
+                                  C2Rect(mWidth, mHeight).at(left, top));
+
     mOutBlock = nullptr;
 
     {
@@ -1222,7 +1249,7 @@ c2_status_t C2RKMpiDec::ensureDecoderState(
     uint32_t blockH = mVerStride;
 
     uint64_t usage  = RK_GRALLOC_USAGE_SPECIFY_STRIDE;
-    uint32_t format = C2RKMediaUtils::colorFormatMpiToAndroid(mColorFormat);
+    uint32_t format = C2RKMediaUtils::colorFormatMpiToAndroid(mColorFormat, mFbcCfg.mode);
 
     // workround for tencent-video, the application can not deal with crop
     // correctly, so use actual dimention when fetch block, make sure that
@@ -1232,9 +1259,16 @@ c2_status_t C2RKMpiDec::ensureDecoderState(
         usage = C2RKMediaUtils::getStrideUsage(mWidth, mHorStride);
     }
 
-    if (blockW <= 0 || blockH <= 0) {
-        c2_err_f("query get illegal block size, w %d h %d", blockW, blockH);
-        return C2_CORRUPTED;
+    if (mFbcCfg.mode) {
+        // NOTE: FBC case may have offset y on top and vertical stride
+        // should aligned to 16.
+        blockH = C2_ALIGN(mVerStride + mFbcCfg.paddingY, 16);
+
+        // In fbc 10bit mode, treat width of buffer as pixer_stride.
+        if (format == HAL_PIXEL_FORMAT_YUV420_10BIT_I ||
+            format == HAL_PIXEL_FORMAT_Y210) {
+            blockW = C2_ALIGN(mWidth, 64);
+        }
     }
 
     /*

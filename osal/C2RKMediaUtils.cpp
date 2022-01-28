@@ -117,28 +117,44 @@ bool C2RKMediaUtils::getDomainFromComponentName(C2String componentName, C2Compon
 }
 
 
-int32_t C2RKMediaUtils::colorFormatMpiToAndroid(const uint32_t format) {
+int32_t C2RKMediaUtils::colorFormatMpiToAndroid(uint32_t format, bool fbcMode) {
     FunctionIn();
 
     int32_t aFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
 
-    switch (format) {
+    switch (format & MPP_FRAME_FMT_MASK) {
         case MPP_FMT_YUV422SP:
         case MPP_FMT_YUV422P: {
-            aFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP;
+            if (fbcMode) {
+                aFormat = HAL_PIXEL_FORMAT_YCbCr_422_I;
+            } else {
+                aFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP;
+            }
         } break;
         case MPP_FMT_YUV420SP:
         case MPP_FMT_YUV420P: {
-            aFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
+            if (fbcMode) {
+                aFormat = HAL_PIXEL_FORMAT_YUV420_8BIT_I;
+            } else {
+                aFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
+            }
         } break;
         case MPP_FMT_YUV420SP_10BIT: {
-            aFormat = HAL_PIXEL_FORMAT_YCrCb_NV12_10;
+            if (fbcMode) {
+                aFormat = HAL_PIXEL_FORMAT_YUV420_10BIT_I;
+            } else {
+                aFormat = HAL_PIXEL_FORMAT_YCrCb_NV12_10;
+            }
         } break;
         case MPP_FMT_YUV422SP_10BIT: {
-            aFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP_10;
+            if (fbcMode) {
+                aFormat = HAL_PIXEL_FORMAT_Y210;
+            } else {
+                aFormat = HAL_PIXEL_FORMAT_YCbCr_422_SP_10;
+            }
         } break;
         default: {
-            c2_err("unsupport color format: %d", format);
+            c2_err("unsupport color format: 0x%x", format);
         }
     }
 

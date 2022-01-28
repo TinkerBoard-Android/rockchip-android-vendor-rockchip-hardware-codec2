@@ -64,7 +64,7 @@ public:
     static bool getKindFromComponentName(C2String componentName, C2Component::kind_t *kind);
     static bool getDomainFromComponentName(C2String componentName, C2Component::domain_t *domain);
     static bool checkHWSupport(MppCtxType type, MppCodingType codingType);
-    static int32_t colorFormatMpiToAndroid(const uint32_t format);
+    static int32_t colorFormatMpiToAndroid(uint32_t format, bool fbcMode);
     static uint64_t getStrideUsage(int32_t width, int32_t stride);
 };
 

@@ -102,6 +102,13 @@ private:
     */
     bool mBufferMode;
 
+    struct FbcConfig {
+        uint32_t mode;
+        // fbc decode output padding
+        uint32_t paddingX;
+        uint32_t paddingY;
+    } mFbcCfg;
+
     std::shared_ptr<C2GraphicBlock> mOutBlock;
 
     // Color aspects. These are ISO values and are meant to detect changes
