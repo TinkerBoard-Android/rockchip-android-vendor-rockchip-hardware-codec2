@@ -872,6 +872,7 @@ void C2RKMpiDec::process(
     bool eos = ((flags & C2FrameData::FLAG_END_OF_STREAM) != 0);
     bool hasPicture = false;
     bool delayOutput = false;
+    uint32_t outfrmCnt = 0;
     OutWorkEntry entry;
 
     err = ensureDecoderState(pool);
@@ -888,8 +889,11 @@ void C2RKMpiDec::process(
         c2_warn("failed to enqueue packet, pts %lld", timestamp);
     } else if (flags & (C2FrameData::FLAG_CODEC_CONFIG | FLAG_NON_DISPLAY_FRAME)) {
         fillEmptyWork(work);
-        return;
     } else {
+        if (inSize == 0 && !eos) {
+            fillEmptyWork(work);
+        }
+
         // TODO workround: CTS-CodecDecoderTest
         // testFlushNative[15(c2.rk.mpeg2.decoder_video/mpeg2)
         if (mLastPts != timestamp) {
@@ -897,7 +901,6 @@ void C2RKMpiDec::process(
         } else if (mCodingType == MPP_VIDEO_CodingMPEG2) {
             if (!eos) {
                 fillEmptyWork(work);
-                return;
             }
         }
     }
@@ -906,6 +909,7 @@ outframe:
     if (!eos) {
         err = getoutframe(&entry);
         if (err == C2_OK) {
+            outfrmCnt++;
             hasPicture = true;
         } else if (err == C2_CORRUPTED) {
             mSignalledError = true;
@@ -931,6 +935,8 @@ outframe:
             delayOutput = true;
         }
         goto outframe;
+    } else if (outfrmCnt == 0) {
+        usleep(1000);
     }
 }
 
