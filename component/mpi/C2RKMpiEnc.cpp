@@ -118,8 +118,8 @@ public:
                 DefineParam(mSize, C2_PARAMKEY_PICTURE_SIZE)
                 .withDefault(new C2StreamPictureSizeInfo::input(0u, 176, 144))
                 .withFields({
-                    C2F(mSize, width).inRange(2, 7680, 2),
-                    C2F(mSize, height).inRange(2, 7680, 2),
+                    C2F(mSize, width).inRange(176, 7680, 2),
+                    C2F(mSize, height).inRange(144, 7680, 2),
                 })
                 .withSetter(SizeSetter)
                 .build());
