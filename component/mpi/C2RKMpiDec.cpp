@@ -1090,7 +1090,7 @@ c2_status_t C2RKMpiDec::getoutframe(OutWorkEntry *entry) {
             c2_info("get output eos.");
             mOutputEos = true;
             // ignore null frame with eos
-            if (!pts) goto exit;
+            if (!mppBuffer) goto exit;
         }
 
         if (mBufferMode) {
