@@ -118,7 +118,7 @@ public:
                 DefineParam(mSize, C2_PARAMKEY_PICTURE_SIZE)
                 .withDefault(new C2StreamPictureSizeInfo::input(0u, 176, 144))
                 .withFields({
-                    C2F(mSize, width).inRange(176, 7680, 2),
+                    C2F(mSize, width).inRange(144, 7680, 2),
                     C2F(mSize, height).inRange(144, 7680, 2),
                 })
                 .withSetter(SizeSetter)
@@ -675,7 +675,7 @@ C2RKMpiEnc::C2RKMpiEnc(
       mStarted(false),
       mSpsPpsHeaderReceived(false),
       mSawInputEOS(false),
-      mSawOutputEOS(false),
+      mOutputEOS(false),
       mSignalledError(false),
       mHorStride(0),
       mVerStride(0),
@@ -748,10 +748,6 @@ c2_status_t C2RKMpiEnc::onFlush_sm() {
 }
 
 c2_status_t C2RKMpiEnc::setupBaseCodec() {
-    /* default stride */
-    mHorStride = C2_ALIGN(mSize->width, 16);
-    mVerStride = C2_ALIGN(mSize->height, 8);
-
     c2_info("setupBaseCodec: coding %d w %d h %d hor %d ver %d",
             mCodingType, mSize->width, mSize->height, mHorStride, mVerStride);
 
@@ -763,12 +759,6 @@ c2_status_t C2RKMpiEnc::setupBaseCodec() {
     mpp_enc_cfg_set_s32(mEncCfg, "prep:ver_stride", mVerStride);
     mpp_enc_cfg_set_s32(mEncCfg, "prep:format", MPP_FMT_YUV420SP);
     mpp_enc_cfg_set_s32(mEncCfg, "prep:rotation", MPP_ENC_ROT_0);
-
-    if (mCodingType == MPP_VIDEO_CodingAVC) {
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_en", 1);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_idc", 0);
-        mpp_enc_cfg_set_s32(mEncCfg, "h264:trans8x8", 1);
-    }
 
     return C2_OK;
 }
@@ -1221,15 +1211,14 @@ c2_status_t C2RKMpiEnc::setupTemporalLayers() {
     return C2_OK;
 }
 
-c2_status_t C2RKMpiEnc::initEncParams() {
+c2_status_t C2RKMpiEnc::setupEncCfg() {
     c2_status_t ret = C2_OK;
     int err = 0;
 
     err = mpp_enc_cfg_init(&mEncCfg);
     if (err) {
-        ret = C2_CORRUPTED;
         c2_err("failed to get enc_cfg, ret %d", err);
-        goto __RETURN;
+        return C2_CORRUPTED;
     }
 
     /* Video control Set Base Codec */
@@ -1257,7 +1246,6 @@ c2_status_t C2RKMpiEnc::initEncParams() {
     if (err) {
         c2_err("failed to setup codec cfg, ret %d", err);
         ret = C2_CORRUPTED;
-        goto __RETURN;
     } else {
         /* optional */
         MppEncSeiMode seiMode = MPP_ENC_SEI_MODE_ONE_FRAME;
@@ -1265,11 +1253,9 @@ c2_status_t C2RKMpiEnc::initEncParams() {
         if (err) {
             c2_err("failed to setup sei cfg, ret %d", err);
             ret = C2_CORRUPTED;
-            goto __RETURN;
         }
     }
 
-__RETURN:
     return ret;
 }
 
@@ -1288,6 +1274,10 @@ c2_status_t C2RKMpiEnc::initEncoder() {
         mRequestSync = mIntf->getRequestSync_l();
     }
 
+    /* default stride */
+    mHorStride = C2_ALIGN(mSize->width, 16);
+    mVerStride = C2_ALIGN(mSize->height, 8);
+
     /*
      * create vpumem for mpp input
      *
@@ -1299,9 +1289,9 @@ c2_status_t C2RKMpiEnc::initEncoder() {
     gralloc_private_handle_t privHandle;
     uint32_t stride = 0;
 
-    uint64_t usage = (GRALLOC_USAGE_SW_READ_OFTEN
-                      | GRALLOC_USAGE_SW_WRITE_OFTEN
-                      | RK_GRALLOC_USAGE_WITHIN_4G);
+    uint64_t usage = (GRALLOC_USAGE_SW_READ_OFTEN |
+                      GRALLOC_USAGE_SW_WRITE_OFTEN |
+                      RK_GRALLOC_USAGE_WITHIN_4G);
 
     status_t status = GraphicBufferAllocator::get().allocate(
             C2_ALIGN(mSize->width, 16), C2_ALIGN(mSize->height, 16),
@@ -1309,7 +1299,7 @@ c2_status_t C2RKMpiEnc::initEncoder() {
             usage, &bufferHandle, &stride, "C2RKMpiEnc");
     if (status) {
         c2_err("failed transaction: allocate");
-        goto __FAILED;
+        goto error;
     }
 
     Rockchip_get_gralloc_private((uint32_t *)bufferHandle, &privHandle);
@@ -1326,35 +1316,35 @@ c2_status_t C2RKMpiEnc::initEncoder() {
     if (err) {
         c2_err("failed to mpp_create, ret %d", err);
         ret = C2_CORRUPTED;
-        goto __FAILED;
+        goto error;
     }
 
     err = mMppMpi->control(mMppCtx, MPP_SET_OUTPUT_TIMEOUT, &timeout);
     if (MPP_OK != err) {
         c2_err("failed to set output timeout %d, ret %d", timeout, err);
         ret = C2_CORRUPTED;
-        goto __FAILED;
+        goto error;
     }
 
     err = mpp_init(mMppCtx, MPP_CTX_ENC, mCodingType);
     if (err) {
         c2_err("failed to mpp_init, ret %d", err);
         ret = C2_CORRUPTED;
-        goto __FAILED;
+        goto error;
     }
 
-    ret = initEncParams();
+    ret = setupEncCfg();
     if (ret) {
-        c2_err("failed to init encoder params, ret=0x%x", ret);
+        c2_err("failed to set config, ret=0x%x", ret);
         ret = C2_CORRUPTED;
-        goto __FAILED;
+        goto error;
     }
 
     mStarted = true;
 
     return C2_OK;
 
-__FAILED:
+error:
     releaseEncoder();
 
     return ret;
@@ -1364,7 +1354,7 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
     mStarted = false;
     mSpsPpsHeaderReceived = false;
     mSawInputEOS = false;
-    mSawOutputEOS = false;
+    mOutputEOS = false;
     mSignalledError = false;
 
     if (mEncCfg) {
@@ -1396,7 +1386,7 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
     return C2_OK;
 }
 
-static void fillEmptyWork(const std::unique_ptr<C2Work>& work) {
+void C2RKMpiEnc::fillEmptyWork(const std::unique_ptr<C2Work>& work) {
     uint32_t flags = 0;
 
     c2_trace_f("in");
@@ -1411,20 +1401,137 @@ static void fillEmptyWork(const std::unique_ptr<C2Work>& work) {
     work->workletsProcessed = 1u;
 }
 
+void C2RKMpiEnc::finishWork(
+        const std::unique_ptr<C2Work> &work,
+        const std::shared_ptr<C2BlockPool>& pool,
+        OutWorkEntry entry) {
+    c2_status_t ret = C2_OK;
+    uint64_t frmIndex = 0;
+    MppPacket packet = nullptr;
+    std::shared_ptr<C2LinearBlock> block;
+    C2MemoryUsage usage = { C2MemoryUsage::CPU_READ, C2MemoryUsage::CPU_WRITE };
+
+    frmIndex = entry.frameIndex;
+    packet = entry.outPacket;
+
+    void   *data = mpp_packet_get_data(packet);
+    size_t  len  = mpp_packet_get_length(packet);
+
+    ret = pool->fetchLinearBlock(len, usage, &block);
+    if (ret != C2_OK) {
+        c2_err("failed to fetch block for output, ret 0x%x", ret);
+        work->result = ret;
+        work->workletsProcessed = 1u;
+        mSignalledError = true;
+        return;
+    }
+
+    C2WriteView wView = block->map().get();
+    if (C2_OK != wView.error()) {
+        c2_err("write view map failed with status 0x%x", wView.error());
+        work->result = wView.error();
+        work->workletsProcessed = 1u;
+        mSignalledError = true;
+        return;
+    }
+
+    // copy mpp output to c2 output
+    memcpy(wView.data(), data, len);
+
+    if (mOutFile != nullptr) {
+        fwrite(data, 1, len, mOutFile);
+        fflush(mOutFile);
+    }
+
+    RK_S32 isIntra = 0;
+    std::shared_ptr<C2Buffer> buffer = createLinearBuffer(block, 0, len);
+    MppMeta meta = mpp_packet_get_meta(packet);
+    mpp_meta_get_s32(meta, KEY_OUTPUT_INTRA, &isIntra);
+    if (isIntra) {
+        c2_info("IDR frame produced");
+        buffer->setInfo(std::make_shared<C2StreamPictureTypeMaskInfo::output>(
+                0u /* stream id */, C2Config::SYNC_FRAME));
+    }
+
+    mpp_packet_deinit(&packet);
+
+    auto fillWork = [buffer](const std::unique_ptr<C2Work> &work) {
+        work->worklets.front()->output.flags = (C2FrameData::flags_t)0;
+        work->worklets.front()->output.buffers.clear();
+        work->worklets.front()->output.buffers.push_back(buffer);
+        work->worklets.front()->output.ordinal = work->input.ordinal;
+        work->workletsProcessed = 1u;
+    };
+
+    if (work && c2_cntr64_t(frmIndex) == work->input.ordinal.frameIndex) {
+        fillWork(work);
+        if (mSawInputEOS) {
+            work->worklets.front()->output.flags = C2FrameData::FLAG_END_OF_STREAM;
+        }
+    } else {
+        finish(frmIndex, fillWork);
+    }
+}
+
+c2_status_t C2RKMpiEnc::drainInternal(
+        uint32_t drainMode,
+        const std::shared_ptr<C2BlockPool> &pool,
+        const std::unique_ptr<C2Work> &work) {
+    c2_trace_f("in");
+
+    if (drainMode == NO_DRAIN) {
+        c2_warn("drain with NO_DRAIN: no-op");
+        return C2_OK;
+    }
+    if (drainMode == DRAIN_CHAIN) {
+        c2_warn("DRAIN_CHAIN not supported");
+        return C2_OMITTED;
+    }
+
+    c2_status_t ret = C2_OK;
+    OutWorkEntry entry;
+
+    while (true) {
+        memset(&entry, 0, sizeof(entry));
+        ret = getoutpacket(&entry);
+        if (ret == C2_OK) {
+            finishWork(work, pool, entry);
+        } else {
+            if (work && work->workletsProcessed != 1u) fillEmptyWork(work);
+            break;
+        }
+    }
+
+    c2_info_f("out");
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::drain(
+        uint32_t drainMode,
+        const std::shared_ptr<C2BlockPool> &pool) {
+    return drainInternal(drainMode, pool, nullptr);
+}
+
 void C2RKMpiEnc::process(
         const std::unique_ptr<C2Work> &work,
         const std::shared_ptr<C2BlockPool> &pool) {
-    FunctionIn();
+    c2_status_t err = C2_OK;
 
     // Initialize output work
     work->result = C2_OK;
     work->workletsProcessed = 0u;
     work->worklets.front()->output.flags = work->input.flags;
 
-    c2_trace("process one work timestamp %llu frameindex %llu, flags %x",
-             work->input.ordinal.timestamp.peeku(),
-             work->input.ordinal.frameIndex.peeku(),
-             work->input.flags);
+    // Initialize encoder if not already initialized
+    if (!mStarted) {
+        err = initEncoder();
+        if (err != C2_OK) {
+            work->result = C2_BAD_VALUE;
+            c2_info("failed to initialize, signalled Error");
+            return;
+        }
+    }
 
     if (mSignalledError) {
         work->result = C2_BAD_VALUE;
@@ -1432,27 +1539,8 @@ void C2RKMpiEnc::process(
         return;
     }
 
-    // Initialize encoder if not already initialized
-    if (!mStarted) {
-        c2_status_t status = initEncoder();
-        if (C2_OK != status) {
-            c2_err("failed to initialize encoder: 0x%x", status);
-            mSignalledError = true;
-            work->result = status;
-            work->workletsProcessed = 1u;
-            return;
-        }
-    }
-
-    if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
-        mSawInputEOS = true;
-    } else {
-        mSawInputEOS = false;
-    }
-
     std::shared_ptr<const C2GraphicView> view;
     std::shared_ptr<C2Buffer> inputBuffer = nullptr;
-
     if (!work->input.buffers.empty()) {
         inputBuffer = work->input.buffers[0];
         view = std::make_shared<const C2GraphicView>(
@@ -1477,14 +1565,22 @@ void C2RKMpiEnc::process(
         }
     }
 
+    uint32_t flags = work->input.flags;
+    uint64_t frameIndex = work->input.ordinal.frameIndex.peekull();
+    uint64_t timestamp = work->input.ordinal.timestamp.peekll();
+
+    c2_trace("process one work timestamp %llu frameindex %llu, flags %x",
+             timestamp, frameIndex, flags);
+
+    mSawInputEOS = (flags & C2FrameData::FLAG_END_OF_STREAM);
+
     if (!mSpsPpsHeaderReceived) {
         MppPacket hdrPkt = nullptr;
         void *hdrBuf = nullptr;
         void *extradata = nullptr;
-        int hdrBufSize = 0;
-        int extradataSize = 0;
+        uint32_t hdrBufSize = 1024;
+        uint32_t extradataSize = 0;
 
-        hdrBufSize = 1024;
         hdrBuf = malloc(hdrBufSize * sizeof(uint8_t));
         if (hdrBuf)
             mpp_packet_init(&hdrPkt, hdrBuf, hdrBufSize);
@@ -1496,7 +1592,7 @@ void C2RKMpiEnc::process(
         }
 
         std::unique_ptr<C2StreamInitDataInfo::output> csd =
-            C2StreamInitDataInfo::output::AllocUnique(extradataSize, 0u);
+                C2StreamInitDataInfo::output::AllocUnique(extradataSize, 0u);
         if (!csd) {
             c2_err("CSD allocation failed");
             work->result = C2_NO_MEMORY;
@@ -1539,22 +1635,35 @@ void C2RKMpiEnc::process(
         }
     }
 
-    c2_status_t err = C2_OK;
+    MyDmaBuffer_t inDmaBuf;
+    OutWorkEntry entry;
 
-    /* send frame to mpp */
-    err = encoder_sendframe(work);
-    if (C2_OK != err) {
-        c2_err("failed to sendframe, err %d", err);
+    memset(&inDmaBuf, 0, sizeof(MyDmaBuffer_t));
+    memset(&entry, 0, sizeof(OutWorkEntry));
+
+    err = getInBufferFromWork(work, &inDmaBuf);
+    if (err != C2_OK) {
+        mSignalledError = true;
         work->result = C2_CORRUPTED;
         work->workletsProcessed = 1u;
+        return;
+    }
+
+    /* send frame to mpp */
+    err = sendframe(inDmaBuf, frameIndex, flags);
+    if (C2_OK != err) {
+        c2_err("failed to enqueue frame, err %d", err);
         mSignalledError = true;
+        work->result = C2_CORRUPTED;
+        work->workletsProcessed = 1u;
         return;
     }
 
     /* get packet from mpp */
-    err = encoder_getstream(work, pool);
-    if (C2_OK != err) {
-        c2_err("getstream failed or eos!");
+    err = getoutpacket(&entry);
+    if (err == C2_OK) {
+        finishWork(work, pool, entry);
+    } else {
         if (work && work->workletsProcessed != 1u) {
             fillEmptyWork(work);
         }
@@ -1564,29 +1673,162 @@ void C2RKMpiEnc::process(
         fillEmptyWork(work);
     }
 
-    if (mSawInputEOS && mSawOutputEOS != 1) {
+    if (mSawInputEOS && !mOutputEOS) {
         drainInternal(DRAIN_COMPONENT_WITH_EOS, pool, work);
     }
-
-    FunctionOut();
 }
 
-c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
+c2_status_t C2RKMpiEnc::getInBufferFromWork(
+        const std::unique_ptr<C2Work> &work, MyDmaBuffer_t *outBuffer) {
+    c2_status_t ret = C2_OK;
+    uint64_t frameIndex = work->input.ordinal.frameIndex.peekull();
+
+    if (work->input.buffers.empty()) {
+        c2_warn("ignore empty input with frameIndex %lld", frameIndex);
+        return C2_OK;
+    }
+
+    std::shared_ptr<const C2GraphicView> view;
+    std::shared_ptr<C2Buffer> inputBuffer = nullptr;
+
+    inputBuffer = work->input.buffers[0];
+    view = std::make_shared<const C2GraphicView>(
+            inputBuffer->data().graphicBlocks().front().map().get());
+    const C2GraphicView* const input = view.get();
+    const C2PlanarLayout& layout = input->layout();
+    const C2Handle *c2Handle = inputBuffer->data().graphicBlocks().front().handle();
+
+    uint32_t bqSlot, width, height, format, stride, generation;
+    uint64_t usage, bqId;
+
+    android::_UnwrapNativeCodec2GrallocMetadata(
+            c2Handle, &width, &height, &format, &usage,
+            &stride, &generation, &bqId, &bqSlot);
+
+    // Fix error for wifidisplay when stride is 0
+    if (stride == 0) {
+        std::vector<ui::PlaneLayout> layouts;
+        buffer_handle_t bufferHandle;
+        native_handle_t *grallocHandle = UnwrapNativeCodec2GrallocHandle(c2Handle);
+
+        GraphicBufferMapper &gm(GraphicBufferMapper::get());
+        gm.importBuffer(const_cast<native_handle_t *>(grallocHandle),
+                        width, height, 1, format, usage,
+                        stride, &bufferHandle);
+        gm.getPlaneLayouts(const_cast<native_handle_t *>(bufferHandle), &layouts);
+        if (layouts[0].sampleIncrementInBits != 0) {
+            stride = layouts[0].strideInBytes * 8 / layouts[0].sampleIncrementInBits;
+        } else {
+            c2_err("layouts[0].sampleIncrementInBits = 0");
+            stride = mHorStride;
+        }
+        gm.freeBuffer(bufferHandle);
+        native_handle_delete(grallocHandle);
+    }
+
+    c2_trace("in buffer attr. w %d h %d stride %d layout 0x%x frameIndex %lld",
+             width, height, stride, layout.type, frameIndex);
+
+    switch (layout.type) {
+    case C2PlanarLayout::TYPE_RGB:
+        [[fallthrough]];
+    case C2PlanarLayout::TYPE_RGBA: {
+        RgaParam src, dst;
+        uint32_t fd = c2Handle->data[0];
+
+        if (mInFile != nullptr) {
+            fwrite(input->data()[0], 1, stride * height * 4, mInFile);
+            fflush(mInFile);
+        }
+
+        C2RKRgaDef::paramInit(&src, fd, width, height, stride, height);
+        C2RKRgaDef::paramInit(&dst, mDmaMem->fd,
+                              mSize->width, mSize->height, mHorStride, mVerStride);
+
+        if (!C2RKRgaDef::rgbToNv12(src, dst)) {
+            c2_err("faild to convert rgba to nv12");
+            ret = C2_CORRUPTED;
+        }
+
+        outBuffer->fd = mDmaMem->fd;
+        outBuffer->size = mHorStride * mVerStride * 3 / 2;
+    } break;
+    case C2PlanarLayout::TYPE_YUV: {
+        uint32_t fd = c2Handle->data[0];
+
+        if (!IsYUV420(*input)) {
+            c2_err("input is not YUV420");
+            return C2_BAD_VALUE;
+        }
+
+        if (mInFile != nullptr) {
+            fwrite(input->data()[0], 1, stride * height * 3 / 2, mInFile);
+            fflush(mInFile);
+        }
+
+        /*
+         * mpp-driver fetch buffer 16 bits at one time, so the stride of
+         * input buffer shoule be aligned to 16.
+         * For this reason if the stride of buffer not aligned to 16, we
+         * copy input buffer to anothor larger dmaBuffer, and than import
+         * this dmaBuffer to encoder.
+         */
+        if ((stride & 0xf) || (height & 0xf)) {
+            RgaParam src, dst;
+
+            C2RKRgaDef::paramInit(&src, fd, width, height, stride, height);
+            C2RKRgaDef::paramInit(&dst, mDmaMem->fd,
+                                  mSize->width, mSize->height, mHorStride, mVerStride);
+
+            if (!C2RKRgaDef::nv12Copy(src, dst)) {
+                c2_err("faild to copy nv12");
+                ret = C2_CORRUPTED;
+            }
+
+            outBuffer->fd = mDmaMem->fd;
+            outBuffer->size = mHorStride * mVerStride * 3 / 2;
+        } else {
+            if (mHorStride != stride || mVerStride != height) {
+                // setup encoder using new stride config
+                mpp_enc_cfg_set_s32(mEncCfg, "prep:hor_stride", stride);
+                mpp_enc_cfg_set_s32(mEncCfg, "prep:ver_stride", height);
+
+                int err = mMppMpi->control(mMppCtx, MPP_ENC_SET_CFG, mEncCfg);
+                if (!err) {
+                    c2_info("cfg stride change from [%d:%d] -> [%d %d]",
+                            mHorStride, mVerStride, stride, height);
+                    mHorStride = stride;
+                    mVerStride = height;
+                } else {
+                    c2_err("failed to setup new mpp config.");
+                }
+            }
+            outBuffer->fd = fd;
+            outBuffer->size = mHorStride * mVerStride * 3 / 2;
+        }
+    } break;
+    default:
+        c2_err("Unrecognized plane type: %d", layout.type);
+        ret = C2_BAD_VALUE;
+    }
+
+    return ret;
+}
+
+c2_status_t C2RKMpiEnc::sendframe(
+        MyDmaBuffer_t dBuffer, uint64_t pts, uint32_t flags) {
     int err = 0;
     c2_status_t ret = C2_OK;
     MppFrame frame = nullptr;
 
-    c2_trace("%s in", __func__);
-
-    uint64_t workIndex = work->input.ordinal.frameIndex.peekull();
-
-    MppBufferInfo inputCommit;
-    memset(&inputCommit, 0, sizeof(inputCommit));
-    inputCommit.type = MPP_BUFFER_TYPE_ION;
+    MppBufferInfo commit;
+    memset(&commit, 0, sizeof(commit));
+    commit.type = MPP_BUFFER_TYPE_ION;
 
     mpp_frame_init(&frame);
 
-    if (work->input.flags & C2FrameData::FLAG_END_OF_STREAM) {
+    if (flags & C2FrameData::FLAG_END_OF_STREAM) {
+        c2_info("send input eos");
         mpp_frame_set_eos(frame, 1);
     }
 
@@ -1612,178 +1854,44 @@ c2_status_t C2RKMpiEnc::encoder_sendframe(const std::unique_ptr<C2Work> &work){
         }
     }
 
-    std::shared_ptr<const C2GraphicView> view;
-    std::shared_ptr<C2Buffer> inputBuffer = nullptr;
+    c2_trace("send frame fd %d size %d pts %lld", dBuffer.fd, dBuffer.size, pts);
 
-    if (!work->input.buffers.empty()) {
-        inputBuffer = work->input.buffers[0];
-        view = std::make_shared<const C2GraphicView>(
-                inputBuffer->data().graphicBlocks().front().map().get());
-        const C2Handle *c2Handle = inputBuffer->data().graphicBlocks().front().handle();
+    if (dBuffer.fd > 0) {
+        MppBuffer buffer = nullptr;
 
-        uint32_t bqSlot, width, height, format, stride, generation;
-        uint64_t usage, bqId;
+        commit.fd = dBuffer.fd;
+        commit.size = dBuffer.size;
 
-        android::_UnwrapNativeCodec2GrallocMetadata(
-                c2Handle, &width, &height, &format, &usage,
-                &stride, &generation, &bqId, &bqSlot);
-
-        // Fix error for wifidisplay when stride is 0
-        if (stride == 0) {
-            std::vector<ui::PlaneLayout> layouts;
-            buffer_handle_t bufferHandle;
-            native_handle_t *grallocHandle = UnwrapNativeCodec2GrallocHandle(c2Handle);
-
-            GraphicBufferMapper &gm(GraphicBufferMapper::get());
-            gm.importBuffer(const_cast<native_handle_t *>(grallocHandle),
-                            width, height, 1, format, usage,
-                            stride, &bufferHandle);
-            gm.getPlaneLayouts(const_cast<native_handle_t *>(bufferHandle), &layouts);
-            if (layouts[0].sampleIncrementInBits != 0) {
-                stride = layouts[0].strideInBytes * 8 / layouts[0].sampleIncrementInBits;
-            } else {
-                c2_err("layouts[0].sampleIncrementInBits = 0");
-                stride = mHorStride;
-            }
-            gm.freeBuffer(bufferHandle);
-            native_handle_delete(grallocHandle);
-        }
-
-        uint32_t inFd = c2Handle->data[0];
-        /* src buffer dimensions */
-        uint32_t inWidth = mSize->width;
-        uint32_t inHeight = mSize->height;
-        uint32_t inWstride = stride;
-        uint32_t inHstride = height;
-        /* dst buffer stride */
-        uint32_t outWstride = mHorStride;
-        uint32_t outHstride = mVerStride;
-
-        const C2GraphicView* const input = view.get();
-        const C2PlanarLayout& layout = input->layout();
-
-        c2_trace("send input frame w %d h %d hor %d ver %d type %d",
-                 inWidth, inHeight, inWstride, inHstride, layout.type);
-
-        switch (layout.type) {
-        case C2PlanarLayout::TYPE_RGB:
-            [[fallthrough]];
-        case C2PlanarLayout::TYPE_RGBA: {
-            RgaParam srcParam, dstParam;
-            c2_trace("%s %d input rgb", __func__, __LINE__);
-
-            if (mInFile != nullptr) {
-                fwrite(input->data()[0], 1, inWidth * inHeight * 4, mInFile);
-                fflush(mInFile);
-            }
-
-            C2RKRgaDef::paramInit(&srcParam, inFd,
-                                  inWidth, inHeight, inWstride, inHstride);
-            C2RKRgaDef::paramInit(&dstParam, mDmaMem->fd,
-                                  inWidth, inHeight, outWstride, outHstride);
-
-            if (!C2RKRgaDef::rgbToNv12(srcParam, dstParam)) {
-                c2_err("failed to convert rgbToNv12");
-            }
-
-            inputCommit.size = outWstride * outHstride * 3 / 2;
-            inputCommit.fd = mDmaMem->fd;
-            break;
-        }
-        case C2PlanarLayout::TYPE_YUV:
-            c2_trace("%s %d input yuv", __func__, __LINE__);
-
-            if (!IsYUV420(*input)) {
-                c2_err("input is not YUV420");
-                return C2_BAD_VALUE;
-            }
-
-            if (mInFile != nullptr) {
-                fwrite(input->data()[0], 1, inWstride * inHstride * 3 / 2, mInFile);
-                fflush(mInFile);
-            }
-
-            /*
-             * mpp-driver fetch buffer 16 bits at one time, so the stride of
-             * input buffer shoule be aligned to 16.
-             * For this reason if the stride of buffer not aligned to 16, we
-             * copy input buffer to anothor larger dmaBuffer, and than import
-             * this dmaBuffer to encoder.
-             */
-            if ((inWstride & 0xf) || (inHstride & 0xf)) {
-                RgaParam srcParam, dstParam;
-
-                C2RKRgaDef::paramInit(&srcParam, inFd, inWidth, inHeight,
-                                      inWstride, inHstride);
-                C2RKRgaDef::paramInit(&dstParam, mDmaMem->fd,
-                                      inWidth, inHeight, outWstride, outHstride);
-
-                if (!C2RKRgaDef::nv12Copy(srcParam, dstParam)) {
-                    c2_err("faild to convert nv12");
-                }
-                inputCommit.fd = mDmaMem->fd;
-                inputCommit.size = outWstride * outHstride * 3 / 2;
-            } else {
-                if (mHorStride != inWstride || mVerStride != inHstride) {
-                    // setup encoder using new stride config
-                    mpp_enc_cfg_set_s32(mEncCfg, "prep:hor_stride", inWstride);
-                    mpp_enc_cfg_set_s32(mEncCfg, "prep:ver_stride", inHstride);
-
-                    err = mMppMpi->control(mMppCtx, MPP_ENC_SET_CFG, mEncCfg);
-                    if (!err) {
-                        c2_info("cfg stride change from [%d:%d] -> [%d %d]",
-                                mHorStride, mVerStride, stride, height);
-                        outWstride = mHorStride = inWstride;
-                        outHstride = mVerStride = inHstride;
-                    } else {
-                        c2_err("failed to setup new mpp config.");
-                    }
-                }
-                inputCommit.fd = inFd;
-                inputCommit.size = outWstride * outHstride * 3 / 2;
-            }
-            break;
-        case C2PlanarLayout::TYPE_YUVA:
-            c2_err("YUVA plane type is not supported");
-            ret = C2_BAD_VALUE;
-            goto __FAILED;
-        default:
-            c2_err("Unrecognized plane type: %d", layout.type);
-            ret = C2_BAD_VALUE;
-            goto __FAILED;
-        }
-
-        MppBuffer buffer = NULL;
-        ret = (c2_status_t)mpp_buffer_import(&buffer, &inputCommit);
-        if (ret) {
+        err = mpp_buffer_import(&buffer, &commit);
+        if (err) {
             c2_err("failed to import input buffer");
             ret = C2_NOT_FOUND;
-            goto __FAILED;
+            goto error;
         }
         mpp_frame_set_buffer(frame, buffer);
         mpp_buffer_put(buffer);
-        buffer = NULL;
+        buffer = nullptr;
     } else {
-        mpp_frame_set_buffer(frame, NULL);
+        mpp_frame_set_buffer(frame, nullptr);
     }
 
     mpp_frame_set_width(frame, mSize->width);
     mpp_frame_set_height(frame, mSize->height);
     mpp_frame_set_hor_stride(frame, mHorStride);
     mpp_frame_set_ver_stride(frame, mVerStride);
-    mpp_frame_set_pts(frame, workIndex);
+    mpp_frame_set_pts(frame, pts);
     mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
 
     err = mMppMpi->encode_put_frame(mMppCtx, frame);
     if (err) {
-        c2_err("failed to put_frame, ret %d", ret);
+        c2_err("failed to put_frame, err %d", err);
         ret = C2_NOT_FOUND;
-        goto __FAILED;
+        goto error;
     }
 
     ret = C2_OK;
 
-__FAILED:
+error:
     if (frame) {
         mpp_frame_deinit(&frame);
     }
@@ -1791,140 +1899,39 @@ __FAILED:
     return ret;
 }
 
-c2_status_t C2RKMpiEnc::encoder_getstream(const std::unique_ptr<C2Work> &work,
-                                          const std::shared_ptr<C2BlockPool>& pool) {
+c2_status_t C2RKMpiEnc::getoutpacket(OutWorkEntry *entry) {
     int err = 0;
-    c2_status_t ret = C2_OK;
-    MppPacket packet = NULL;
-
-    c2_trace("%s in", __func__);
+    MppPacket packet = nullptr;
 
     err = mMppMpi->encode_get_packet(mMppCtx, &packet);
     if (err) {
-        c2_err("failed to get packet");
-        ret = C2_CORRUPTED;
+        return C2_NOT_FOUND;
     } else {
-        mSawOutputEOS = mpp_packet_get_eos(packet);
-        uint64_t workId = (uint64_t)mpp_packet_get_pts(packet);
-        uint8_t *src = (uint8_t *)mpp_packet_get_data(packet);
-        size_t len  = mpp_packet_get_length(packet);
+        int64_t  pts = mpp_packet_get_pts(packet);
+        size_t   len = mpp_packet_get_length(packet);
+        uint32_t eos = mpp_packet_get_eos(packet);
 
-        if (mSawOutputEOS == 1 && workId == 0) {
-            c2_err("eos with empty pkt");
-            ret = C2_CORRUPTED;
+        c2_trace("get outpacket pts %lld size %d eos %d", pts, len, eos);
+
+        if (eos) {
+            c2_info("get output eos");
+            mOutputEOS = true;
+            if (pts == 0 || !len) {
+                c2_info("eos with empty pkt");
+                return C2_CORRUPTED;
+            }
         }
-        if (!src || (len == 0)) {
-            c2_err("empty output or len = 0");
-            ret = C2_CORRUPTED;
+
+        if (!len) {
+            c2_warn("ignore empty output with pts %lld", pts);
+            return C2_CORRUPTED;
         }
 
-        if (C2_OK == ret) {
-            finishWork(workId, work, pool, packet);
-        }
-    }
+        entry->frameIndex = pts;
+        entry->outPacket  = packet;
 
-    return ret;
-}
-
-void C2RKMpiEnc::finishWork(uint64_t workIndex,
-                            const std::unique_ptr<C2Work> &work,
-                            const std::shared_ptr<C2BlockPool>& pool,
-                            MppPacket packet) {
-    c2_status_t status;
-    std::shared_ptr<C2LinearBlock> block;
-    C2MemoryUsage usage = { C2MemoryUsage::CPU_READ, C2MemoryUsage::CPU_WRITE };
-
-    uint8_t *src = (uint8_t *)mpp_packet_get_data(packet);
-    size_t length = mpp_packet_get_length(packet);
-
-    status = pool->fetchLinearBlock(length, usage, &block);
-    if (C2_OK != status) {
-        c2_err("failed to fetchLinearBlock for output, status 0x%x", status);
-        work->result = status;
-        work->workletsProcessed = 1u;
-        mSignalledError = true;
-        return;
-    }
-
-    C2WriteView wView = block->map().get();
-    if (C2_OK != wView.error()) {
-        c2_err("write view map failed with status 0x%x", wView.error());
-        work->result = wView.error();
-        work->workletsProcessed = 1u;
-        mSignalledError = true;
-        return;
-    }
-
-    // copy mpp output to c2 output
-    memcpy(wView.data(), src, length);
-    c2_trace("encoded frame size %zu", length);
-
-    if (mOutFile != nullptr) {
-        fwrite(src, 1, length, mOutFile);
-        fflush(mOutFile);
-    }
-
-    RK_S32 isIntra = 0;
-    std::shared_ptr<C2Buffer> buffer = createLinearBuffer(block, 0, length);
-    MppMeta meta = mpp_packet_get_meta(packet);
-    mpp_meta_get_s32(meta, KEY_OUTPUT_INTRA, &isIntra);
-    if (isIntra) {
-        c2_info("IDR frame produced");
-        buffer->setInfo(std::make_shared<C2StreamPictureTypeMaskInfo::output>(
-                0u /* stream id */, C2Config::SYNC_FRAME));
-    }
-    mpp_packet_deinit(&packet);
-
-    auto fillWork = [buffer](const std::unique_ptr<C2Work> &work) {
-        work->worklets.front()->output.flags = (C2FrameData::flags_t)0;
-        work->worklets.front()->output.buffers.clear();
-        work->worklets.front()->output.buffers.push_back(buffer);
-        work->worklets.front()->output.ordinal = work->input.ordinal;
-        work->workletsProcessed = 1u;
-    };
-
-    if (work && c2_cntr64_t(workIndex) == work->input.ordinal.frameIndex) {
-        fillWork(work);
-        if (mSawInputEOS) {
-            work->worklets.front()->output.flags = C2FrameData::FLAG_END_OF_STREAM;
-        }
-    } else {
-        finish(workIndex, fillWork);
-    }
-}
-
-c2_status_t C2RKMpiEnc::drainInternal(
-        uint32_t drainMode,
-        const std::shared_ptr<C2BlockPool> &pool,
-        const std::unique_ptr<C2Work> &work) {
-    c2_trace_f("in");
-
-    if (drainMode == NO_DRAIN) {
-        c2_warn("drain with NO_DRAIN: no-op");
         return C2_OK;
     }
-    if (drainMode == DRAIN_CHAIN) {
-        c2_warn("DRAIN_CHAIN not supported");
-        return C2_OMITTED;
-    }
-
-    c2_status_t ret = C2_OK;
-    while (true) {
-        ret = encoder_getstream(work, pool);
-        if (ret != C2_OK) {
-            c2_err("failed to getstream or eos!");
-            if (work && work->workletsProcessed != 1u) fillEmptyWork(work);
-            break;
-        }
-    }
-
-    return C2_OK;
-}
-
-c2_status_t C2RKMpiEnc::drain(
-        uint32_t drainMode,
-        const std::shared_ptr<C2BlockPool> &pool) {
-    return drainInternal(drainMode, pool, nullptr);
 }
 
 class C2RKMpiEncFactory : public C2ComponentFactory {

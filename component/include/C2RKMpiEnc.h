@@ -24,9 +24,11 @@
 namespace android {
 
 struct C2RKMpiEnc : public C2RKComponent {
+public:
     class IntfImpl;
 
     C2RKMpiEnc(const char *name, c2_node_id_t id, const std::shared_ptr<IntfImpl> &intfImpl);
+    virtual ~C2RKMpiEnc();
 
     c2_status_t onInit() override;
     c2_status_t onStop() override;
@@ -40,9 +42,6 @@ struct C2RKMpiEnc : public C2RKComponent {
             uint32_t drainMode,
             const std::shared_ptr<C2BlockPool> &pool) override;
 
-protected:
-    virtual ~C2RKMpiEnc();
-
 private:
     /* DMA buffer memery */
     typedef struct {
@@ -51,26 +50,31 @@ private:
         void    *handler; /* buffer_handle_t */
     } MyDmaBuffer_t;
 
+    typedef struct {
+        MppPacket outPacket;
+        uint64_t  frameIndex;
+    } OutWorkEntry;
+
     std::shared_ptr<IntfImpl> mIntf;
     MyDmaBuffer_t *mDmaMem;
 
     /* MPI interface parameters */
-    MppCtx    mMppCtx;
-    MppApi   *mMppMpi;
-    MppEncCfg mEncCfg;
-    MppCodingType mCodingType;
+    MppCtx         mMppCtx;
+    MppApi        *mMppMpi;
+    MppEncCfg      mEncCfg;
+    MppCodingType  mCodingType;
 
-    bool    mStarted;
-    bool    mSpsPpsHeaderReceived;
-    bool    mSawInputEOS;
-    bool    mSawOutputEOS;
-    bool    mSignalledError;
-    int32_t mHorStride;
-    int32_t mVerStride;
+    bool           mStarted;
+    bool           mSpsPpsHeaderReceived;
+    bool           mSawInputEOS;
+    bool           mOutputEOS;
+    bool           mSignalledError;
+    int32_t        mHorStride;
+    int32_t        mVerStride;
 
     /* dump file for debug */
-    FILE *mInFile;
-    FILE *mOutFile;
+    FILE          *mInFile;
+    FILE          *mOutFile;
 
     // configurations used by component in process
     // (TODO: keep this in intf but make them internal only)
@@ -79,7 +83,15 @@ private:
     std::shared_ptr<C2StreamBitrateModeTuning::output> mBitrateMode;
     std::shared_ptr<C2StreamRequestSyncFrameTuning::output> mRequestSync;
 
-private:
+    void fillEmptyWork(const std::unique_ptr<C2Work> &work);
+    void finishWork(
+            const std::unique_ptr<C2Work> &work,
+            const std::shared_ptr<C2BlockPool>& pool,
+            OutWorkEntry entry);
+    c2_status_t drainInternal(uint32_t drainMode,
+            const std::shared_ptr<C2BlockPool> &pool,
+            const std::unique_ptr<C2Work> &work);
+
     c2_status_t setupBaseCodec();
     c2_status_t setupFrameRate();
     c2_status_t setupBitRate();
@@ -87,20 +99,16 @@ private:
     c2_status_t setupQp();
     c2_status_t setupVuiParams();
     c2_status_t setupTemporalLayers();
+    c2_status_t setupEncCfg();
 
-    c2_status_t initEncParams();
     c2_status_t initEncoder();
     c2_status_t releaseEncoder();
-    c2_status_t encoder_sendframe(const std::unique_ptr<C2Work> &work);
-    c2_status_t encoder_getstream(const std::unique_ptr<C2Work> &work,
-                                  const std::shared_ptr<C2BlockPool>& pool);
-    void finishWork(uint64_t workIndex,
-                    const std::unique_ptr<C2Work> &work,
-                    const std::shared_ptr<C2BlockPool>& pool,
-                    MppPacket packet);
-    c2_status_t drainInternal(uint32_t drainMode,
-            const std::shared_ptr<C2BlockPool> &pool,
-            const std::unique_ptr<C2Work> &work);
+
+    c2_status_t getInBufferFromWork(
+            const std::unique_ptr<C2Work> &work, MyDmaBuffer_t *outBuffer);
+    c2_status_t sendframe(
+            MyDmaBuffer_t dBuffer, uint64_t pts, uint32_t flags);
+    c2_status_t getoutpacket(OutWorkEntry *entry);
 
     C2_DO_NOT_COPY(C2RKMpiEnc);
 };
