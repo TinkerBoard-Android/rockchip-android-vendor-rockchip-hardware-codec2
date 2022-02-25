@@ -23,6 +23,7 @@ cc_library_static {
     include_dirs: [
         "vendor/rockchip/hardware/interfaces/codec2/osal/include",
         "hardware/rockchip/librga/include",
+        "hardware/rockchip/librga/im2d_api",
     ],
 
     header_libs: [

@@ -21,10 +21,27 @@
 
 #include "C2RKRgaDef.h"
 #include "C2RKLog.h"
+#include "im2d.h"
 #include "RockchipRga.h"
 #include "hardware/hardware_rockchip.h"
 
 using namespace android;
+
+rga_buffer_handle_t importRgaBuffer(RgaParam *param, int32_t format) {
+    im_handle_param_t imParam;
+
+    memset(&imParam, 0, sizeof(im_handle_param_t));
+
+    imParam.width  = param->width;
+    imParam.height = param->height;
+    imParam.format = format;
+
+    return importbuffer_fd(param->fd, &imParam);
+}
+
+void freeRgaBuffer(rga_buffer_handle_t handle) {
+    releasebuffer_handle(handle);
+}
 
 void C2RKRgaDef::paramInit(RgaParam *param, int32_t fd,
                            int32_t width, int32_t height,
@@ -39,8 +56,12 @@ void C2RKRgaDef::paramInit(RgaParam *param, int32_t fd,
 }
 
 bool C2RKRgaDef::rgbToNv12(RgaParam srcParam, RgaParam dstParam) {
+    bool ret = true;
+
     rga_info_t src;
     rga_info_t dst;
+    rga_buffer_handle_t srcHdl;
+    rga_buffer_handle_t dstHdl;
 
     RockchipRga& rkRga(RockchipRga::get());
 
@@ -57,8 +78,15 @@ bool C2RKRgaDef::rgbToNv12(RgaParam srcParam, RgaParam dstParam) {
     memset((void*)&src, 0, sizeof(rga_info_t));
     memset((void*)&dst, 0, sizeof(rga_info_t));
 
-    src.fd = srcParam.fd;
-    dst.fd = dstParam.fd;
+    srcHdl = importRgaBuffer(&srcParam, HAL_PIXEL_FORMAT_RGBA_8888);
+    dstHdl = importRgaBuffer(&dstParam, HAL_PIXEL_FORMAT_YCrCb_NV12);
+    if (!srcHdl || !dstHdl) {
+        c2_err("failed to import rga buffer");
+        return false;
+    }
+
+    src.handle = srcHdl;
+    dst.handle = dstHdl;
     rga_set_rect(&src.rect, 0, 0,srcParam.width, srcParam.height,
                  srcParam.wstride, srcParam.hstride, HAL_PIXEL_FORMAT_RGBA_8888);
     rga_set_rect(&dst.rect, 0, 0,dstParam.width, dstParam.height,
@@ -66,15 +94,22 @@ bool C2RKRgaDef::rgbToNv12(RgaParam srcParam, RgaParam dstParam) {
 
     if (rkRga.RkRgaBlit(&src, &dst, NULL)) {
         c2_err("RgaBlit fail, rgbToNv12");
-        return false;
+        ret = false;
     }
 
-    return true;
+    freeRgaBuffer(srcHdl);
+    freeRgaBuffer(dstHdl);
+
+    return ret;
 }
 
 bool C2RKRgaDef::nv12Copy(RgaParam srcParam, RgaParam dstParam) {
+    bool ret = true;
+
     rga_info_t src;
     rga_info_t dst;
+    rga_buffer_handle_t srcHdl;
+    rga_buffer_handle_t dstHdl;
 
     RockchipRga& rkRga(RockchipRga::get());
 
@@ -91,8 +126,15 @@ bool C2RKRgaDef::nv12Copy(RgaParam srcParam, RgaParam dstParam) {
     memset((void*)&src, 0, sizeof(rga_info_t));
     memset((void*)&dst, 0, sizeof(rga_info_t));
 
-    src.fd = srcParam.fd;
-    dst.fd = dstParam.fd;
+    srcHdl = importRgaBuffer(&srcParam, HAL_PIXEL_FORMAT_YCrCb_NV12);
+    dstHdl = importRgaBuffer(&dstParam, HAL_PIXEL_FORMAT_YCrCb_NV12);
+    if (!srcHdl || !dstHdl) {
+        c2_err("failed to import rga buffer");
+        return false;
+    }
+
+    src.handle = srcHdl;
+    dst.handle = dstHdl;
     rga_set_rect(&src.rect, 0, 0,srcParam.width, srcParam.height,
                  srcParam.wstride, srcParam.hstride, HAL_PIXEL_FORMAT_YCrCb_NV12);
     rga_set_rect(&dst.rect, 0, 0,dstParam.width, dstParam.height,
@@ -100,8 +142,11 @@ bool C2RKRgaDef::nv12Copy(RgaParam srcParam, RgaParam dstParam) {
 
     if (rkRga.RkRgaBlit(&src, &dst, NULL)) {
         c2_err("RgaBlit fail, nv12Copy");
-        return false;
+        ret = false;
     }
 
-    return true;
+    freeRgaBuffer(srcHdl);
+    freeRgaBuffer(dstHdl);
+
+    return ret;
 }
