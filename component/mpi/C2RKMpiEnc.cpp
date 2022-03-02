@@ -198,7 +198,7 @@ public:
             addParameter(
                     DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
                     .withDefault(new C2StreamProfileLevelInfo::output(
-                            0u, PROFILE_AVC_BASELINE, LEVEL_AVC_3_1))
+                            0u, PROFILE_AVC_HIGH, LEVEL_AVC_3_1))
                     .withFields({
                         C2F(mProfileLevel, profile).oneOf({
                             PROFILE_AVC_BASELINE,
