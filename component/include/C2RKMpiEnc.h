@@ -23,6 +23,10 @@
 
 namespace android {
 
+enum ExtendedC2ParamIndexKind : C2Param::type_index_t {
+    kParamIndexSceneMode = C2Param::TYPE_INDEX_VENDOR_START,
+};
+
 struct C2RKMpiEnc : public C2RKComponent {
 public:
     class IntfImpl;
@@ -93,6 +97,7 @@ private:
             const std::unique_ptr<C2Work> &work);
 
     c2_status_t setupBaseCodec();
+    c2_status_t setupSceneMode();
     c2_status_t setupFrameRate();
     c2_status_t setupBitRate();
     c2_status_t setupProfileParams();

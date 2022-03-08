@@ -45,6 +45,9 @@
 
 namespace android {
 
+typedef C2PortParam<C2Info, C2Int32Value, kParamIndexSceneMode> C2StreamSceneModeInfo;
+constexpr char C2_PARAMKEY_SCENE_MODE[] = "scene-mode";
+
 namespace {
 
 void ParseGop(
@@ -295,7 +298,7 @@ public:
                 .build());
 
         addParameter(
-            DefineParam(mLayering, C2_PARAMKEY_TEMPORAL_LAYERING)
+                DefineParam(mLayering, C2_PARAMKEY_TEMPORAL_LAYERING)
                 .withDefault(C2StreamTemporalLayeringTuning::output::AllocShared(0u, 0, 0, 0))
                 .withFields({
                     C2F(mLayering, m.layerCount).inRange(0, 4),
@@ -303,6 +306,14 @@ public:
                     C2F(mLayering, m.bitrateRatios).inRange(0., 1.)
                 })
                 .withSetter(LayeringSetter)
+                .build());
+
+        /* extend parameter definition */
+        addParameter(
+                DefineParam(mSceneMode, C2_PARAMKEY_SCENE_MODE)
+                .withDefault(new C2StreamSceneModeInfo::input(0))
+                .withFields({C2F(mSceneMode, value).any()})
+                .withSetter(Setter<decltype(mSceneMode)::element_type>::StrictValueWithNoDeps)
                 .build());
     }
 
@@ -645,6 +656,9 @@ public:
     { return mCodedColorAspects; }
     std::shared_ptr<C2StreamTemporalLayeringTuning::output> getTemporalLayers_l() const
     { return mLayering; }
+    std::shared_ptr<C2StreamSceneModeInfo::input> getSceneMode_l() const
+    { return mSceneMode; }
+
 
 private:
     std::shared_ptr<C2StreamUsageTuning::input> mUsage;
@@ -661,6 +675,7 @@ private:
     std::shared_ptr<C2StreamColorAspectsInfo::input> mColorAspects;
     std::shared_ptr<C2StreamColorAspectsInfo::output> mCodedColorAspects;
     std::shared_ptr<C2StreamTemporalLayeringTuning::output> mLayering;
+    std::shared_ptr<C2StreamSceneModeInfo::input> mSceneMode;
 };
 
 C2RKMpiEnc::C2RKMpiEnc(
@@ -759,6 +774,23 @@ c2_status_t C2RKMpiEnc::setupBaseCodec() {
     mpp_enc_cfg_set_s32(mEncCfg, "prep:ver_stride", mVerStride);
     mpp_enc_cfg_set_s32(mEncCfg, "prep:format", MPP_FMT_YUV420SP);
     mpp_enc_cfg_set_s32(mEncCfg, "prep:rotation", MPP_ENC_ROT_0);
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::setupSceneMode() {
+    IntfImpl::Lock lock = mIntf->lock();
+
+    std::shared_ptr<C2StreamSceneModeInfo::input> c2Mode = mIntf->getSceneMode_l();
+
+    c2_info("setupSceneMode: scene-mode %d", c2Mode->value);
+
+    /*
+     * scene-mode of encoder, this feature only support on rk3588
+     *   - 0: deault none ipc mode
+     *   - 1: ipc mode
+     */
+    mpp_enc_cfg_set_s32(mEncCfg, "tune:scene_mode", c2Mode->value);
 
     return C2_OK;
 }
@@ -1223,6 +1255,9 @@ c2_status_t C2RKMpiEnc::setupEncCfg() {
 
     /* Video control Set Base Codec */
     setupBaseCodec();
+
+    /* Video control Set Scene Mode */
+    setupSceneMode();
 
     /* Video control Set FrameRates and gop */
     setupFrameRate();
