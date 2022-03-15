@@ -897,6 +897,11 @@ c2_status_t C2RKMpiEnc::setupProfileParams() {
     case MPP_VIDEO_CodingAVC : {
         mpp_enc_cfg_set_s32(mEncCfg, "h264:profile", profile);
         mpp_enc_cfg_set_s32(mEncCfg, "h264:level", level);
+        if (profile >= H264_PROFILE_HIGH) {
+            mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_en", 1);
+            mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_idc", 0);
+            mpp_enc_cfg_set_s32(mEncCfg, "h264:trans8x8", 1);
+        }
     } break;
     case MPP_VIDEO_CodingHEVC : {
         mpp_enc_cfg_set_s32(mEncCfg, "h265:profile", profile);
