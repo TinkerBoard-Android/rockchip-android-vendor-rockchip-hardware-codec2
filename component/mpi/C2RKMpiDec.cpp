@@ -1078,10 +1078,13 @@ c2_status_t C2RKMpiDec::getoutframe(OutWorkEntry *entry) {
 
         ret = C2_NO_MEMORY;
     } else {
-        uint32_t err = mpp_frame_get_errinfo(frame);
-        int64_t  pts = mpp_frame_get_pts(frame);
-        uint32_t eos = mpp_frame_get_eos(frame);
+        uint32_t err  = mpp_frame_get_errinfo(frame);
+        int64_t  pts  = mpp_frame_get_pts(frame);
+        uint32_t eos  = mpp_frame_get_eos(frame);
+        uint32_t mode = mpp_frame_get_mode(frame);
+
         MppBuffer mppBuffer = mpp_frame_get_buffer(frame);
+        bool isI4O2 = (mode & MPP_FRAME_FLAG_IEP_DEI_MASK) == MPP_FRAME_FLAG_IEP_DEI_I4O2;
 
         c2_trace("get one frame [%d:%d] stride [%d:%d] pts %lld err %d eos %d",
                  width, height, hstride, vstride, pts, err, eos);
@@ -1148,10 +1151,16 @@ c2_status_t C2RKMpiDec::getoutframe(OutWorkEntry *entry) {
             }
         }
 
+        c2_trace("getoutframe pts %lld outIndex %d", pts, outIndex);
+
         if (outIndex == 0) {
-            c2_warn("get unexpect pts %lld, skip this frame", pts);
-            if (mppBuffer) {
-                mpp_buffer_put(mppBuffer);
+            if (isI4O2) {
+                outIndex = I2O4INDEX;
+            } else {
+                c2_warn("get unexpect pts %lld, skip this frame", pts);
+                if (mppBuffer) {
+                    mpp_buffer_put(mppBuffer);
+                }
             }
         }
 

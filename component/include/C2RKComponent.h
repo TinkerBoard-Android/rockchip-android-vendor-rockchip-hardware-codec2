@@ -25,6 +25,10 @@
 #include <media/stagefright/foundation/Mutexed.h>
 #include "C2Component.h"
 
+
+#define I2O4INDEX 0xEFFFFFFE
+
+
 namespace android {
 
 class C2RKComponent

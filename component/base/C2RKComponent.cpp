@@ -433,6 +433,17 @@ void C2RKComponent::finish(
         return;
     }
 
+    if (frameIndex == I2O4INDEX) {
+        c2_trace("C2RKComponent::finish i2o4");
+        std::unique_ptr<C2Work> outputWork(new C2Work);
+        outputWork->worklets.clear();
+        outputWork->worklets.emplace_back(new C2Worklet);
+        fillWork(outputWork);
+        std::shared_ptr<C2Component::Listener> listener = mExecState.lock()->mListener;
+        listener->onWorkDone_nb(shared_from_this(), vec(outputWork));
+        return;
+    }
+
     {
         Mutexed<WorkQueue>::Locked queue(mWorkQueue);
         if (queue->pending().count(frameIndex) == 0) {
