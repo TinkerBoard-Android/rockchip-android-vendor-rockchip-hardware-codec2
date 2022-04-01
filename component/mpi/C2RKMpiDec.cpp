@@ -440,6 +440,9 @@ public:
         return mColorAspects;
     }
 
+    std::shared_ptr<C2StreamColorAspectsTuning::output> getDefaultColorAspects_l() {
+        return mDefaultColorAspects;
+    }
 private:
     std::shared_ptr<C2StreamPictureSizeInfo::output> mSize;
     std::shared_ptr<C2StreamMaxPictureSizeTuning::output> mMaxSize;
@@ -563,6 +566,7 @@ c2_status_t C2RKMpiDec::initDecoder() {
         IntfImpl::Lock lock = mIntf->lock();
         mWidth = mIntf->getSize_l()->width;
         mHeight = mIntf->getSize_l()->height;
+        mTransfer = (uint32_t)mIntf->getDefaultColorAspects_l()->transfer;
     }
 
     c2_info("init: w %d h %d coding %d", mWidth, mHeight, mCodingType);
@@ -592,7 +596,8 @@ c2_status_t C2RKMpiDec::initDecoder() {
         uint32_t mppFmt = mColorFormat;
 
         /* user can't process fbc output on bufferMode */
-        if (!mBufferMode && (mWidth * mHeight > 1920 * 1080)) {
+        /* SMPTEST2084 = 6*/
+        if ((mTransfer == 6) || (!mBufferMode && (mWidth * mHeight > 1920 * 1080))) {
             mFbcCfg.mode = C2RKFbcDef::getFbcOutputMode(mCodingType);
             if (mFbcCfg.mode) {
                 c2_info("use mpp fbc output mode");
