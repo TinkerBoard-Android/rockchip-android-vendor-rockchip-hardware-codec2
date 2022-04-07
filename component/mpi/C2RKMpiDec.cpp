@@ -31,6 +31,7 @@
 #include "C2RKMediaUtils.h"
 #include "C2RKRgaDef.h"
 #include "C2RKFbcDef.h"
+#include "C2RKColorAspects.h"
 #include "C2RKVersion.h"
 #include "C2RKEnv.h"
 
@@ -1289,6 +1290,15 @@ c2_status_t C2RKMpiDec::ensureDecoderState(
             format == HAL_PIXEL_FORMAT_Y210) {
             blockW = C2_ALIGN(mWidth, 64);
         }
+    }
+
+    switch(mTransfer) {
+        case ColorTransfer::kColorTransferST2084:
+            usage |= ((GRALLOC_NV12_10_HDR_10 << 24) & GRALLOC_COLOR_SPACE_MASK);  // hdr10;
+            break;
+        case ColorTransfer::kColorTransferHLG:
+            usage |= ((GRALLOC_NV12_10_HDR_HLG << 24) & GRALLOC_COLOR_SPACE_MASK);  // hdr-hlg
+            break;
     }
 
     /*
