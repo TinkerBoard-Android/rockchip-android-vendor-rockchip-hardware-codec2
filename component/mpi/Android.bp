@@ -10,6 +10,9 @@ cc_library_static {
     srcs: [
         "C2RKMpiDec.cpp",
         "C2RKMpiEnc.cpp",
+        "C2RKExtendParam.cpp",
+        "C2RKCodecMapper.cpp",
+        "C2RKMlvecLegacy.cpp",
     ],
 
     shared_libs: [
@@ -32,6 +35,7 @@ cc_library_static {
         "vendor/rockchip/hardware/interfaces/codec2/osal/include",
         "hardware/rockchip/librkvpu/omx_get_gralloc_private",
         "hardware/rockchip/librga/include",
+        "frameworks/av/media/libstagefright/include",
     ],
 
     export_shared_lib_headers: [

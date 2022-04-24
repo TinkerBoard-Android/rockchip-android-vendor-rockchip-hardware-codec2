@@ -17,9 +17,7 @@
 #undef  ROCKCHIP_LOG_TAG
 #define ROCKCHIP_LOG_TAG    "C2RKMpiEnc"
 
-#include <utils/misc.h>
-
-#include <C2Debug.h>
+#include <stdio.h>
 #include <Codec2Mapper.h>
 #include <C2PlatformSupport.h>
 #include <Codec2BufferUtils.h>
@@ -36,17 +34,14 @@
 #include "C2RKMpiEnc.h"
 #include "C2RKMediaUtils.h"
 #include "C2RKRgaDef.h"
-#include "mpp/h264_syntax.h"
-#include "mpp/h265_syntax.h"
 #include "C2RKLog.h"
 #include "C2RKEnv.h"
+#include "C2RKExtendParam.h"
+#include "C2RKCodecMapper.h"
 #include "C2RKVideoGlobal.h"
 #include "C2RKVersion.h"
 
 namespace android {
-
-typedef C2PortParam<C2Info, C2Int32Value, kParamIndexSceneMode> C2StreamSceneModeInfo;
-constexpr char C2_PARAMKEY_SCENE_MODE[] = "scene-mode";
 
 namespace {
 
@@ -85,6 +80,25 @@ void ParseGop(
 
 } // namepsace
 
+struct MlvecParams {
+    std::shared_ptr<C2DriverVersion::output> driverInfo;
+    std::shared_ptr<C2MaxLayerCount::output> maxLayerCount;
+    std::shared_ptr<C2LowLatencyMode::output> lowLatencyMode;
+    std::shared_ptr<C2MaxLTRFramesCount::output> maxLTRFramesCount;
+    std::shared_ptr<C2PreOPSupport::output> preOPSupport;
+    std::shared_ptr<C2MProfileLevel::output> profileLevel;
+    std::shared_ptr<C2SliceSpacing::output> sliceSpacing;
+    std::shared_ptr<C2RateControl::output> rateControl;
+    std::shared_ptr<C2NumLTRFrms::output> numLTRFrms;
+    std::shared_ptr<C2SarSize::output> sarSize;
+    std::shared_ptr<C2InputQueuCtl::output> inputQueueCtl;
+    std::shared_ptr<C2LtrCtlMark::input> ltrMarkFrmCtl;
+    std::shared_ptr<C2LtrCtlUse::input> ltrUseFrmCtl;
+    std::shared_ptr<C2FrameQPCtl::input> frameQPCtl;
+    std::shared_ptr<C2BaseLayerPid::input> baseLayerPid;
+    std::shared_ptr<C2TriggerTime::input> triggerTime;
+};
+
 class C2RKMpiEnc::IntfImpl : public C2RKInterface<void>::BaseParams {
 public:
     explicit IntfImpl(
@@ -105,6 +119,8 @@ public:
         noTimeStretch();
         setDerivedInstance(this);
 
+        mMlvecParams = std::make_shared<MlvecParams>();
+
         addParameter(
                 DefineParam(mUsage, C2_PARAMKEY_INPUT_STREAM_USAGE)
                 .withConstValue(new C2StreamUsageTuning::input(
@@ -121,8 +137,8 @@ public:
                 DefineParam(mSize, C2_PARAMKEY_PICTURE_SIZE)
                 .withDefault(new C2StreamPictureSizeInfo::input(0u, 176, 144))
                 .withFields({
-                    C2F(mSize, width).inRange(144, 7680, 2),
-                    C2F(mSize, height).inRange(144, 7680, 2),
+                    C2F(mSize, width).inRange(90, 7680, 2),
+                    C2F(mSize, height).inRange(90, 7680, 2),
                 })
                 .withSetter(SizeSetter)
                 .build());
@@ -197,7 +213,7 @@ public:
                 .withSetter(IntraRefreshSetter)
                 .build());
 
-        if (mediaType == MEDIA_MIMETYPE_VIDEO_AVC){
+        if (mediaType == MEDIA_MIMETYPE_VIDEO_AVC) {
             addParameter(
                     DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
                     .withDefault(new C2StreamProfileLevelInfo::output(
@@ -308,12 +324,131 @@ public:
                 .withSetter(LayeringSetter)
                 .build());
 
+        addParameter(
+                DefineParam(mPrependHeaderMode, C2_PARAMKEY_PREPEND_HEADER_MODE)
+                .withDefault(new C2PrependHeaderModeSetting(PREPEND_HEADER_TO_NONE))
+                .withFields({C2F(mPrependHeaderMode, value).any()})
+                .withSetter(PrependHeaderModeSetter)
+                .build());
+
         /* extend parameter definition */
         addParameter(
                 DefineParam(mSceneMode, C2_PARAMKEY_SCENE_MODE)
                 .withDefault(new C2StreamSceneModeInfo::input(0))
                 .withFields({C2F(mSceneMode, value).any()})
                 .withSetter(Setter<decltype(mSceneMode)::element_type>::StrictValueWithNoDeps)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->driverInfo, C2_PARAMKEY_MLVEC_ENC_DRI_VERSION)
+                .withConstValue(new C2DriverVersion::output(MLVEC_DRIVER_VERSION))
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->maxLayerCount, C2_PARAMKEY_MLVEC_MAX_TEMPORAL_LAYERS)
+                .withConstValue(new C2MaxLayerCount::output(MLVEC_MAX_LAYER_COUNT))
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->lowLatencyMode, C2_PARAMKEY_MLVEC_ENC_LOW_LATENCY_MODE)
+                .withConstValue(new C2LowLatencyMode::output(MLVEC_LOW_LATENCY_MODE_ENABLE))
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->maxLTRFramesCount, C2_PARAMKEY_MLVEC_MAX_LTR_FRAMES)
+                .withConstValue(new C2MaxLTRFramesCount::output(MLVEC_MAX_LTR_FRAMES_COUNT))
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->preOPSupport, C2_PARAMKEY_MLVEC_PRE_OP)
+                .withConstValue(new C2PreOPSupport::output(
+                        MLVEC_PRE_PROCESS_SCALE_SUPPORT, MLVEC_PRE_PROCESS_ROTATION_SUPPORT))
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->profileLevel, C2_PARAMKEY_MLVEC_PROFILE_LEVEL)
+                .withDefault(new C2MProfileLevel::output(0, 0))
+                .withFields({
+                    C2F(mMlvecParams->profileLevel, profile).any(),
+                    C2F(mMlvecParams->profileLevel, level).any()
+                })
+                .withSetter(MProfileLevelSetter)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->sliceSpacing, C2_PARAMKEY_MLVEC_SLICE_SPACING)
+                .withDefault(new C2SliceSpacing::output(0))
+                .withFields({C2F(mMlvecParams->sliceSpacing, spacing).any()})
+                .withSetter(MSliceSpaceSetter)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->rateControl, C2_PARAMKEY_MLVEC_RATE_CONTROL)
+                .withDefault(new C2RateControl::output(-1))
+                .withFields({C2F(mMlvecParams->rateControl, value).any()})
+                .withSetter(Setter<decltype(
+                    mMlvecParams->rateControl)::element_type>::StrictValueWithNoDeps)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->numLTRFrms, C2_PARAMKEY_MLVEC_NUM_LTR_FRAMES)
+                .withDefault(new C2NumLTRFrms::output(0))
+                .withFields({C2F(mMlvecParams->numLTRFrms, num).any()})
+                .withSetter(MNumLTRFrmsSetter)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->sarSize, C2_PARAMKEY_MLVEC_SET_SAR_SIZE)
+                .withDefault(new C2SarSize::output(0, 0))
+                .withFields({
+                    C2F(mMlvecParams->sarSize, width).any(),
+                    C2F(mMlvecParams->sarSize, height).any(),
+                })
+                .withSetter(MSarSizeSetter)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->inputQueueCtl, C2_PARAMKEY_MLVEC_INPUT_QUEUE_CTL)
+                .withDefault(new C2InputQueuCtl::output(0))
+                .withFields({C2F(mMlvecParams->inputQueueCtl, enable).oneOf({0, 1})})
+                .withSetter(MInputQueueCtlSetter)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->ltrMarkFrmCtl, C2_PARAMKEY_MLVEC_LTR_CTL_MARK)
+                .withDefault(new C2LtrCtlMark::input(-1))
+                .withFields({C2F(mMlvecParams->ltrMarkFrmCtl, markFrame).any()})
+                .withSetter(MLtrMarkFrmSetter)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->ltrUseFrmCtl, C2_PARAMKEY_MLVEC_LTR_CTL_USE)
+                .withDefault(new C2LtrCtlUse::input(-1))
+                .withFields({C2F(mMlvecParams->ltrUseFrmCtl, useFrame).any()})
+                .withSetter(MLtrUseFrmSetter)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->frameQPCtl, C2_PARAMKEY_MLVEC_FRAME_QP_CTL)
+                .withDefault(new C2FrameQPCtl::input(-1))
+                .withFields({C2F(mMlvecParams->frameQPCtl, value).any()})
+                .withSetter(Setter<decltype(
+                    mMlvecParams->frameQPCtl)::element_type>::StrictValueWithNoDeps)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->baseLayerPid, C2_PARAMKEY_MLVEC_BASE_LAYER_PID)
+                .withDefault(new C2BaseLayerPid::input(-1))
+                .withFields({C2F(mMlvecParams->baseLayerPid, value).any()})
+                .withSetter(Setter<decltype(
+                    mMlvecParams->baseLayerPid)::element_type>::StrictValueWithNoDeps)
+                .build());
+
+        addParameter(
+                DefineParam(mMlvecParams->triggerTime, C2_PARAMKEY_MLVEC_TRIGGER_TIME)
+                .withDefault(new C2TriggerTime::input(-1))
+                .withFields({C2F(mMlvecParams->triggerTime, timestamp).any()})
+                .withSetter(MTriggerTimeSetter)
                 .build());
     }
 
@@ -380,7 +515,6 @@ public:
         c2_info_f("in");
         return C2R::Ok();
     }
-
 
     uint32_t getSyncFramePeriod_l() const {
         if (mSyncFramePeriod->value < 0 || mSyncFramePeriod->value == INT64_MAX) {
@@ -538,68 +672,6 @@ public:
         return C2R::Ok();
     }
 
-    int32_t getProfile_l(MppCodingType type) const {
-        switch (mProfileLevel->profile) {
-        case PROFILE_AVC_BASELINE: return H264_PROFILE_BASELINE;
-        case PROFILE_AVC_MAIN:     return H264_PROFILE_MAIN;
-        case PROFILE_AVC_HIGH:     return H264_PROFILE_HIGH;
-        case PROFILE_HEVC_MAIN:    return MPP_PROFILE_HEVC_MAIN;
-        case PROFILE_HEVC_MAIN_10: return MPP_PROFILE_HEVC_MAIN_10;
-        default:
-            c2_info("Unrecognized profile: %x", mProfileLevel->profile);
-            if (type == MPP_VIDEO_CodingAVC) {
-                return H264_PROFILE_MAIN;
-            } else if (type == MPP_VIDEO_CodingHEVC) {
-                return MPP_PROFILE_HEVC_MAIN;
-            } else {
-                c2_err_f("unsupport type:%d", type);
-                return 0;
-            }
-        }
-    }
-
-    int32_t getLevel_l(MppCodingType type) const {
-        struct Level {
-            C2Config::level_t c2Level;
-            int32_t Level;
-        };
-        constexpr Level levels[] = {
-            //avc level
-            { LEVEL_AVC_1,          10 },
-            { LEVEL_AVC_1B,          9 },
-            { LEVEL_AVC_1_1,        11 },
-            { LEVEL_AVC_1_2,        12 },
-            { LEVEL_AVC_1_3,        13 },
-            { LEVEL_AVC_2,          20 },
-            { LEVEL_AVC_2_1,        21 },
-            { LEVEL_AVC_2_2,        22 },
-            { LEVEL_AVC_3,          30 },
-            { LEVEL_AVC_3_1,        31 },
-            { LEVEL_AVC_3_2,        32 },
-            { LEVEL_AVC_4,          40 },
-            { LEVEL_AVC_4_1,        41 },
-            { LEVEL_AVC_4_2,        42 },
-            { LEVEL_AVC_5,          50 },
-            { LEVEL_AVC_5_1,        51 },
-            //hevc level
-            { LEVEL_HEVC_MAIN_4_1,  123},
-        };
-        for (const Level &level : levels) {
-            if (mProfileLevel->level == level.c2Level) {
-                return level.Level;
-            }
-        }
-        c2_info("Unrecognized level: %x", mProfileLevel->level);
-        if (type == MPP_VIDEO_CodingAVC) {
-            return 41;
-        } else if (type == MPP_VIDEO_CodingHEVC) {
-            return 123;
-        } else {
-            c2_err_f("unsupport type:%d", type);
-            return 0;
-        }
-    }
-
     static C2R ColorAspectsSetter(bool mayBlock, C2P<C2StreamColorAspectsInfo::input> &me) {
         (void)mayBlock;
         if (me.v.range > C2Color::RANGE_OTHER) {
@@ -627,12 +699,138 @@ public:
         return C2R::Ok();
     }
 
-    static C2R LayeringSetter(bool mayBlock,
-                              C2P<C2StreamTemporalLayeringTuning::output>& me) {
-       (void)mayBlock;
-       (void)me;
-       c2_info_f("in");
-       return C2R::Ok();
+    static C2R LayeringSetter(
+            bool mayBlock, C2P<C2StreamTemporalLayeringTuning::output>& me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    static C2R PrependHeaderModeSetter(
+            bool mayBlock, C2P<C2PrependHeaderModeSetting>& me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    static C2R MProfileLevelSetter(
+            bool mayBlock, C2P<C2MProfileLevel::output> &me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    static C2R MSliceSpaceSetter(
+            bool mayBlock, C2P<C2SliceSpacing::output> &me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    static C2R MNumLTRFrmsSetter(
+            bool mayBlock, C2P<C2NumLTRFrms::output> &me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    static C2R MSarSizeSetter(
+            bool mayBlock, C2P<C2SarSize::output> &me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    static C2R MInputQueueCtlSetter(
+            bool mayBlock, C2P<C2InputQueuCtl::output> &me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    static C2R MLtrMarkFrmSetter(
+            bool mayBlock, C2P<C2LtrCtlMark::input> &me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    static C2R MLtrUseFrmSetter(
+            bool mayBlock, C2P<C2LtrCtlUse::input> &me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    static C2R MTriggerTimeSetter(
+            bool mayBlock, C2P<C2TriggerTime::input> &me) {
+        (void)mayBlock;
+        (void)me;
+        c2_info_f("in");
+        return C2R::Ok();
+    }
+
+    uint32_t getProfile_l(MppCodingType type) const {
+        uint32_t cProfile = mProfileLevel->profile;
+        uint32_t mProfile = mMlvecParams->profileLevel->profile;
+
+        c2_trace_f("cProfile %d mProfile %d", cProfile, mProfile);
+
+        if (type == MPP_VIDEO_CodingAVC) {
+            if (mProfile > 0) {
+                return C2RKCodecMapper::getMppH264Profile(mProfile, false);
+            } else {
+                return C2RKCodecMapper::getMppH264Profile(cProfile, true);
+            }
+        } else if (type == MPP_VIDEO_CodingHEVC) {
+            return C2RKCodecMapper::getMppH265Profile(cProfile);
+        } else {
+            c2_err_f("unsupport coding type:%d", type);
+            return 0;
+        }
+    }
+
+    uint32_t getLevel_l(MppCodingType type) const {
+        uint32_t cLevel = mProfileLevel->level;
+        uint32_t mLevel = mMlvecParams->profileLevel->level;
+
+        c2_trace_f("cLevel %d mLevel %d", cLevel, mLevel);
+
+        if (type == MPP_VIDEO_CodingAVC) {
+            if (mLevel) {
+                return C2RKCodecMapper::getMppH264Level(mLevel, false);
+            } else {
+                return C2RKCodecMapper::getMppH264Level(cLevel, true);
+            }
+        }  else if (type == MPP_VIDEO_CodingHEVC) {
+            return C2RKCodecMapper::getMppH265Level(cLevel);
+        } else {
+            c2_err_f("unsupport coding type:%d", type);
+            return 0;
+        }
+    }
+
+    uint32_t getBitrateMode_l() const {
+        int32_t cMode = mBitrateMode->value;
+        int32_t mMode = mMlvecParams->rateControl->value;
+
+        c2_trace_f("cMode %d mMode %d", cMode, mMode);
+
+        if (mMode >= 0) {
+            c2_trace("get mlvec bitrate mode setup, value %d", mMode);
+            return C2RKCodecMapper::getMppBitrateMode(mMode, false);
+        } else {
+            return C2RKCodecMapper::getMppBitrateMode(cMode, true);
+        }
     }
 
     // unsafe getters
@@ -642,8 +840,6 @@ public:
     { return mIntraRefresh; }
     std::shared_ptr<C2StreamFrameRateInfo::output> getFrameRate_l() const
     { return mFrameRate; }
-    std::shared_ptr<C2StreamBitrateModeTuning::output> getBitrateMode_l() const
-    { return mBitrateMode; }
     std::shared_ptr<C2StreamBitrateInfo::output> getBitrate_l() const
     { return mBitrate; }
     std::shared_ptr<C2StreamRequestSyncFrameTuning::output> getRequestSync_l() const
@@ -656,9 +852,12 @@ public:
     { return mCodedColorAspects; }
     std::shared_ptr<C2StreamTemporalLayeringTuning::output> getTemporalLayers_l() const
     { return mLayering; }
+    std::shared_ptr<C2PrependHeaderModeSetting> getPrependHeaderMode_l() const
+    { return mPrependHeaderMode; }
     std::shared_ptr<C2StreamSceneModeInfo::input> getSceneMode_l() const
     { return mSceneMode; }
-
+    std::shared_ptr<MlvecParams> getMlvecParams_l() const
+    { return mMlvecParams; }
 
 private:
     std::shared_ptr<C2StreamUsageTuning::input> mUsage;
@@ -675,7 +874,9 @@ private:
     std::shared_ptr<C2StreamColorAspectsInfo::input> mColorAspects;
     std::shared_ptr<C2StreamColorAspectsInfo::output> mCodedColorAspects;
     std::shared_ptr<C2StreamTemporalLayeringTuning::output> mLayering;
+    std::shared_ptr<C2PrependHeaderModeSetting> mPrependHeaderMode;
     std::shared_ptr<C2StreamSceneModeInfo::input> mSceneMode;
+    std::shared_ptr<MlvecParams> mMlvecParams;
 };
 
 C2RKMpiEnc::C2RKMpiEnc(
@@ -683,6 +884,7 @@ C2RKMpiEnc::C2RKMpiEnc(
     : C2RKComponent(std::make_shared<C2RKInterface<IntfImpl>>(name, id, intfImpl)),
       mIntf(intfImpl),
       mDmaMem(nullptr),
+      mMlvec(nullptr),
       mMppCtx(nullptr),
       mMppMpi(nullptr),
       mEncCfg(nullptr),
@@ -695,6 +897,9 @@ C2RKMpiEnc::C2RKMpiEnc(
       mSignalledError(false),
       mHorStride(0),
       mVerStride(0),
+      mCurLayerCount(0),
+      mInputCount(0),
+      mOutputCount(0),
       mInFile(nullptr),
       mOutFile(nullptr) {
     c2_info("version: %s", C2_GIT_BUILD_VERSION);
@@ -745,6 +950,7 @@ c2_status_t C2RKMpiEnc::onInit() {
 
 c2_status_t C2RKMpiEnc::onStop() {
     c2_info_f("in");
+    releaseEncoder();
     return C2_OK;
 }
 
@@ -848,30 +1054,31 @@ c2_status_t C2RKMpiEnc::setupBitRate() {
 
     IntfImpl::Lock lock = mIntf->lock();
 
-    mBitrate = mIntf->getBitrate_l();
-    mBitrateMode = mIntf->getBitrateMode_l();
+    bitrate = mIntf->getBitrate_l()->value;
+    bitrateMode = mIntf->getBitrateMode_l();
 
-    bitrate = mBitrate->value;
-    bitrateMode = mBitrateMode->value;
-
-    c2_info("setupBitRate: mode %d bitrate %d", bitrateMode, bitrate);
+    c2_info("setupBitRate: mode %s bitrate %d",
+            toStr_BitrateMode(bitrateMode), bitrate);
 
     mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_target", bitrate);
     switch (bitrateMode) {
-    case C2Config::BITRATE_CONST_SKIP_ALLOWED:
-    case C2Config::BITRATE_CONST: {
+    case MPP_ENC_RC_MODE_CBR: {
         /* CBR mode has narrow bound */
         mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
         mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", bitrate * 17 / 16);
         mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", bitrate * 15 / 16);
     } break;
-    case C2Config::BITRATE_IGNORE:[[fallthrough]];
-    case C2Config::BITRATE_VARIABLE_SKIP_ALLOWED:
-    case C2Config::BITRATE_VARIABLE: {
+    case MPP_ENC_RC_MODE_VBR: {
         /* VBR mode has wide bound */
         mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_VBR);
         mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", bitrate * 17 / 16);
         mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", bitrate * 1 / 16);
+    } break;
+    case MPP_ENC_RC_MODE_FIXQP: {
+        /* FIXQP mode */
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:mode", MPP_ENC_RC_MODE_FIXQP);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_max", bitrate * 17 / 16);
+        mpp_enc_cfg_set_s32(mEncCfg, "rc:bps_min", bitrate * 15 / 16);
     } break;
     default: {
         /* default use CBR mode */
@@ -885,20 +1092,21 @@ c2_status_t C2RKMpiEnc::setupBitRate() {
 }
 
 c2_status_t C2RKMpiEnc::setupProfileParams() {
-    int32_t profile, level;
+    uint32_t profile, level;
 
     IntfImpl::Lock lock = mIntf->lock();
 
     profile = mIntf->getProfile_l(mCodingType);
     level = mIntf->getLevel_l(mCodingType);
 
-    c2_info("setupProfileParams: profile %d level %d", profile, level);
+    c2_info("setupProfileParams: profile %s level %s",
+            toStr_Profile(profile, mCodingType), toStr_Level(level, mCodingType));
 
     switch (mCodingType) {
     case MPP_VIDEO_CodingAVC : {
         mpp_enc_cfg_set_s32(mEncCfg, "h264:profile", profile);
         mpp_enc_cfg_set_s32(mEncCfg, "h264:level", level);
-        if (profile >= H264_PROFILE_HIGH) {
+        if (profile >= MPP_H264_HIGH) {
             mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_en", 1);
             mpp_enc_cfg_set_s32(mEncCfg, "h264:cabac_idc", 0);
             mpp_enc_cfg_set_s32(mEncCfg, "h264:trans8x8", 1);
@@ -919,7 +1127,7 @@ c2_status_t C2RKMpiEnc::setupProfileParams() {
 c2_status_t C2RKMpiEnc::setupQp() {
     int32_t defaultIMin = 0, defaultIMax = 0;
     int32_t defaultPMin = 0, defaultPMax = 0;
-    int32_t qpInit = 0;
+    int32_t qpInit = 0, fixQPMode /* const qp mode */ = 0;
 
     if (mCodingType == MPP_VIDEO_CodingVP8) {
         defaultIMin = defaultPMin = 0;
@@ -941,6 +1149,7 @@ c2_status_t C2RKMpiEnc::setupQp() {
 
     std::shared_ptr<C2StreamPictureQuantizationTuning::output> qp =
             mIntf->getPictureQuantization_l();
+    fixQPMode = (mIntf->getBitrateMode_l() == MPP_ENC_RC_MODE_FIXQP) ? 1 : 0;
 
     for (size_t i = 0; i < qp->flexCount(); ++i) {
         const C2PictureQuantizationStruct &layer = qp->m.values[i];
@@ -965,10 +1174,18 @@ c2_status_t C2RKMpiEnc::setupQp() {
         qpInit = iMin;
     }
 
+    if (fixQPMode) {
+        /* use const qp for p-frame in FIXQP mode */
+        pMax = pMin = qpInit;
+    }
+
     c2_info("setupQp: qpInit %d i %d-%d p %d-%d", qpInit, iMin, iMax, pMin, pMax);
 
     switch (mCodingType) {
     case MPP_VIDEO_CodingAVC:
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:cb_qp_offset", 0);
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:cr_qp_offset", 0);
+        [[fallthrough]];
     case MPP_VIDEO_CodingHEVC: {
         /*
          * disable mb_rc for vepu, this cfg does not apply to rkvenc.
@@ -1038,20 +1255,20 @@ c2_status_t C2RKMpiEnc::setupVuiParams() {
 }
 
 c2_status_t C2RKMpiEnc::setupTemporalLayers() {
-    size_t temporalLayers = 0;
+    int32_t layerCount = 0;
 
     IntfImpl::Lock lock = mIntf->lock();
 
     std::shared_ptr<C2StreamTemporalLayeringTuning::output> layering =
             mIntf->getTemporalLayers_l();
 
-    temporalLayers = layering->m.layerCount;
-    if (temporalLayers == 0) {
+    layerCount = layering->m.layerCount;
+    if (layerCount == 0 || layerCount == 1) {
         return C2_OK;
     }
 
-    if (temporalLayers < 2 || temporalLayers > 4) {
-        c2_warn("only support tsvc layer 2 ~ 4(%zu); ignored.", temporalLayers);
+    if (layerCount < 2 || layerCount > 4) {
+        c2_warn("only support tsvc layer 2 ~ 4(%d); ignored.", layerCount);
         return C2_OK;
     }
 
@@ -1075,9 +1292,9 @@ c2_status_t C2RKMpiEnc::setupTemporalLayers() {
 
     mpp_enc_ref_cfg_init(&ref);
 
-    c2_info("setupTemporalLayers: layers %zu", temporalLayers);
+    c2_info("setupTemporalLayers: layers %d", layerCount);
 
-    switch (temporalLayers) {
+    switch (layerCount) {
     case 4: {
         // tsvc4
         //      /-> P1      /-> P3        /-> P5      /-> P7
@@ -1246,6 +1463,101 @@ c2_status_t C2RKMpiEnc::setupTemporalLayers() {
         return C2_CORRUPTED;
     }
 
+    mCurLayerCount = layerCount;
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::setupPrependHeaderSetting() {
+    int ret = 0;
+    std::shared_ptr<C2PrependHeaderModeSetting> prepend;
+
+    IntfImpl::Lock lock = mIntf->lock();
+
+    prepend = mIntf->getPrependHeaderMode_l();
+
+    if (prepend->value == C2Config::PREPEND_HEADER_TO_ALL_SYNC) {
+        c2_info("setupPrependHeaderSetting: prepend sps pps to idr frames.");
+        MppEncHeaderMode mode = MPP_ENC_HEADER_MODE_EACH_IDR;
+        ret = mMppMpi->control(mMppCtx, MPP_ENC_SET_HEADER_MODE, &mode);
+        if (ret) {
+            c2_err("setupPrependHeaderSetting: failed to set mode ret %d", ret);
+            return C2_CORRUPTED;
+        }
+    }
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::setupMlvecIfNeccessary() {
+    int32_t layerCount = 0;
+    int32_t spacing = 0;
+    int32_t numLTRFrms = 0;
+    int32_t inputCtlMode = 0;
+    uint32_t sarWidth = 0, sarHeight = 0;
+
+    IntfImpl::Lock lock = mIntf->lock();
+
+    std::shared_ptr<MlvecParams> params = mIntf->getMlvecParams_l();
+    std::shared_ptr<C2StreamTemporalLayeringTuning::output> layering =
+            mIntf->getTemporalLayers_l();
+
+    layerCount = layering->m.layerCount;
+
+    spacing      = params->sliceSpacing->spacing;
+    numLTRFrms   = params->numLTRFrms->num;
+    sarWidth     = params->sarSize->width;
+    sarHeight    = params->sarSize->height;
+    inputCtlMode = params->inputQueueCtl->enable;
+
+    /* enable mlvec */
+    if (spacing > 0 || numLTRFrms > 0 || sarWidth > 0 ||
+        sarHeight > 0 || inputCtlMode > 0 || layerCount > 0) {
+        C2RKMlvecLegacy::MStaticCfg stCfg;
+
+        if (numLTRFrms > MLVEC_MAX_LTR_FRAMES_COUNT) {
+            c2_warn("not support LTRFrames num %d(max %d), quit mlvec mode",
+                    numLTRFrms, MLVEC_MAX_LTR_FRAMES_COUNT);
+            return C2_CANNOT_DO;
+        }
+
+        if (sarWidth > mSize->width || sarHeight > mSize->height) {
+            c2_warn("not support sarSize %dx%d, picture size %dx%d, quit mlvec mode",
+                    sarWidth, sarHeight, mSize->width, mSize->height);
+            return C2_CANNOT_DO;
+        }
+
+        c2_info("setupMlvec: layerCount %d spacing %d numLTRFrms %d",
+                layerCount, spacing, numLTRFrms);
+        c2_info("setupMlvec: w %d h %d sarWidth %d sarHeight %d",
+                mSize->width, mSize->height, sarWidth, sarHeight);
+        c2_info("setupMlvec: inputCtlMode %d", inputCtlMode);
+
+        mMlvec = new C2RKMlvecLegacy(mMppCtx, mMppMpi, mEncCfg);
+
+        memset(&stCfg, 0, sizeof(stCfg));
+
+        stCfg.magic = ((int32_t)'M') << 24;
+        stCfg.magic |= ((int32_t)'0') << 16;
+        stCfg.width  = mSize->width;
+        stCfg.height = mSize->height;
+        stCfg.sarWidth  = sarWidth;
+        stCfg.sarHeight = sarHeight;
+        stCfg.maxTid = layerCount;
+        stCfg.ltrFrames = numLTRFrms;
+        stCfg.addPrefix = (layerCount >= 1) ? 1 : 0;
+        stCfg.sliceMbs = spacing;
+
+        if (!mMlvec->setupStaticConfig(&stCfg)) {
+            c2_err("failed to setup mlvec static config");
+        } else {
+            mCurLayerCount = layerCount;
+        }
+
+        // mlvec need pic_order_cnt_type equal to 2
+        mpp_enc_cfg_set_s32(mEncCfg, "h264:poc_type", 2);
+    }
+
     return C2_OK;
 }
 
@@ -1256,6 +1568,12 @@ c2_status_t C2RKMpiEnc::setupEncCfg() {
     err = mpp_enc_cfg_init(&mEncCfg);
     if (err) {
         c2_err("failed to get enc_cfg, ret %d", err);
+        return C2_CORRUPTED;
+    }
+
+    err = mMppMpi->control(mMppCtx, MPP_ENC_GET_CFG, mEncCfg);
+    if (err) {
+        c2_err("failed to get codec cfg, ret %d", err);
         return C2_CORRUPTED;
     }
 
@@ -1282,6 +1600,14 @@ c2_status_t C2RKMpiEnc::setupEncCfg() {
 
     /* Video control Set Temporal Layers */
     setupTemporalLayers();
+
+    /* Video control Set Prepend Header Setting */
+    setupPrependHeaderSetting();
+
+#if 0
+    /* Video control Set MLVEC encoder */
+    setupMlvecIfNeccessary();
+#endif
 
     err = mMppMpi->control(mMppCtx, MPP_ENC_SET_CFG, mEncCfg);
     if (err) {
@@ -1310,7 +1636,6 @@ c2_status_t C2RKMpiEnc::initEncoder() {
     {
         IntfImpl::Lock lock = mIntf->lock();
         mSize = mIntf->getSize_l();
-        mBitrateMode = mIntf->getBitrateMode_l();
         mBitrate = mIntf->getBitrate_l();
         mRequestSync = mIntf->getRequestSync_l();
     }
@@ -1399,6 +1724,11 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
     mSignalledError = false;
     mInputFormat = C2_INPUT_FMT_UNKNOWN;
 
+    if (mInputCount != mOutputCount) {
+        c2_warn("release but input count %d doesn't equal to output count %d.",
+                mInputCount, mOutputCount);
+    }
+
     if (mEncCfg) {
         mpp_enc_cfg_deinit(mEncCfg);
         mEncCfg = nullptr;
@@ -1413,6 +1743,11 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
         GraphicBufferAllocator::get().free((buffer_handle_t)mDmaMem->handler);
         free(mDmaMem);
         mDmaMem = nullptr;
+    }
+
+    if (mMlvec != nullptr) {
+        free(mMlvec);
+        mMlvec = nullptr;
     }
 
     if (mInFile != nullptr) {
@@ -1529,7 +1864,9 @@ c2_status_t C2RKMpiEnc::drainInternal(
         c2_warn("DRAIN_CHAIN not supported");
         return C2_OMITTED;
     }
-    if (drainMode == DRAIN_COMPONENT_NO_EOS && !work) {
+
+    if (mInputCount == mOutputCount) {
+        // no need
         return C2_OK;
     }
 
@@ -1729,6 +2066,107 @@ void C2RKMpiEnc::process(
     }
 }
 
+c2_status_t C2RKMpiEnc::handleRequestSyncFrame() {
+    int32_t layerPos = 0;
+
+    // TODO Is there a better way to count frame layer?
+    if (mCurLayerCount >= 2) {
+        layerPos = mInputCount % (2 << (mCurLayerCount - 2));
+    }
+
+    // only handle IDR request at layer 0
+    if (layerPos == 0) {
+        IntfImpl::Lock lock = mIntf->lock();
+        std::shared_ptr<C2StreamRequestSyncFrameTuning::output> requestSync;
+        requestSync = mIntf->getRequestSync_l();
+        lock.unlock();
+
+        if (requestSync != mRequestSync) {
+            // we can handle IDR immediately
+            if (requestSync->value) {
+                c2_trace("got sync request");
+                // unset request
+                C2StreamRequestSyncFrameTuning::output clearSync(0u, C2_FALSE);
+                std::vector<std::unique_ptr<C2SettingResult>> failures;
+                mIntf->config({ &clearSync }, C2_MAY_BLOCK, &failures);
+                // force set IDR frame
+                mMppMpi->control(mMppCtx, MPP_ENC_SET_IDR_FRAME, nullptr);
+            }
+            mRequestSync = requestSync;
+        }
+    }
+
+    return C2_OK;
+}
+
+c2_status_t C2RKMpiEnc::handleMlvecDynamicCfg(MppMeta meta) {
+    int32_t layerCount = 0;
+    int32_t layerPos = 0;
+
+    if (!mMlvec) {
+        return C2_OK;
+    }
+
+    IntfImpl::Lock lock = mIntf->lock();
+
+    C2RKMlvecLegacy::MDynamicCfg cfg;
+    std::shared_ptr<MlvecParams> params = mIntf->getMlvecParams_l();
+    std::shared_ptr<C2StreamTemporalLayeringTuning::output> layering =
+            mIntf->getTemporalLayers_l();
+
+    layerCount = layering->m.layerCount;
+
+    memset(&cfg, 0, sizeof(cfg));
+
+    /* count layer position */
+    if (layerCount >= 2) {
+        layerPos = mInputCount % (2 << (layerCount - 2));
+        c2_trace("layer %d/%d frameNum %d", layerPos, layerCount, mInputCount);
+    }
+
+    if (layerPos == 0) {
+        if (mCurLayerCount != layerCount) {
+            c2_info("temporalLayers change, %d to %d", mCurLayerCount, layerCount);
+            mMlvec->setupMaxTid(layerCount);
+            mCurLayerCount = layerCount;
+        }
+
+        if (params->ltrMarkFrmCtl->markFrame >= 0) {
+            c2_trace("ltrMarkFrm change, value %d", params->ltrMarkFrmCtl->markFrame);
+            cfg.updated |= MLVEC_ENC_MARK_LTR_UPDATED;
+            cfg.markLtr = params->ltrMarkFrmCtl->markFrame;
+            params->ltrMarkFrmCtl->markFrame = -1;
+        }
+
+        if (params->ltrUseFrmCtl->useFrame >= 0) {
+            c2_trace("ltrUseFrm change, value %d", params->ltrUseFrmCtl->useFrame);
+            cfg.updated |= MLVEC_ENC_USE_LTR_UPDATED;
+            cfg.useLtr = params->ltrUseFrmCtl->useFrame;
+            params->ltrUseFrmCtl->useFrame = -1;
+        }
+    }
+
+    if (params->frameQPCtl->value >= 0) {
+        c2_trace("frameQP change, value %d", params->frameQPCtl->value);
+        cfg.updated |= MLVEC_ENC_FRAME_QP_UPDATED;
+        cfg.frameQP = params->frameQPCtl->value;
+        params->frameQPCtl->value = -1;
+    }
+
+    if (params->baseLayerPid->value >= 0) {
+        c2_trace("baseLayerPid change, value %d", params->baseLayerPid->value);
+        cfg.updated |= MLVEC_ENC_BASE_PID_UPDATED;
+        cfg.baseLayerPid = params->baseLayerPid->value;
+        params->baseLayerPid->value = -1;
+    }
+
+    if (cfg.updated) {
+        mMlvec->setupDynamicConfig(&cfg, meta);
+    }
+
+    return C2_OK;
+}
+
 c2_status_t C2RKMpiEnc::getInBufferFromWork(
         const std::unique_ptr<C2Work> &work, MyDmaBuffer_t *outBuffer) {
     c2_status_t ret = C2_OK;
@@ -1891,28 +2329,6 @@ c2_status_t C2RKMpiEnc::sendframe(
         mpp_frame_set_eos(frame, 1);
     }
 
-    // handle request key frame
-    {
-        IntfImpl::Lock lock = mIntf->lock();
-        std::shared_ptr<C2StreamRequestSyncFrameTuning::output> requestSync;
-        requestSync = mIntf->getRequestSync_l();
-        lock.unlock();
-
-        if (requestSync != mRequestSync) {
-            // we can handle IDR immediately
-            if (requestSync->value) {
-                c2_trace("got sync request");
-                // unset request
-                C2StreamRequestSyncFrameTuning::output clearSync(0u, C2_FALSE);
-                std::vector<std::unique_ptr<C2SettingResult>> failures;
-                mIntf->config({ &clearSync }, C2_MAY_BLOCK, &failures);
-                // force set IDR frame
-                mMppMpi->control(mMppCtx, MPP_ENC_SET_IDR_FRAME, nullptr);
-            }
-            mRequestSync = requestSync;
-        }
-    }
-
     c2_trace("send frame fd %d size %d pts %lld", dBuffer.fd, dBuffer.size, pts);
 
     if (dBuffer.fd > 0) {
@@ -1945,12 +2361,23 @@ c2_status_t C2RKMpiEnc::sendframe(
     mpp_frame_set_pts(frame, pts);
     mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
 
+    /* handle dynamic configurations from teams mlvec */
+    if (mMlvec) {
+        MppMeta meta = mpp_frame_get_meta(frame);
+        handleMlvecDynamicCfg(meta);
+    }
+
+    /* handle IDR request */
+    handleRequestSyncFrame();
+
     err = mMppMpi->encode_put_frame(mMppCtx, frame);
     if (err) {
         c2_err("failed to put_frame, err %d", err);
         ret = C2_NOT_FOUND;
         goto error;
     }
+
+    mInputCount++;
 
     ret = C2_OK;
 
@@ -1992,6 +2419,8 @@ c2_status_t C2RKMpiEnc::getoutpacket(OutWorkEntry *entry) {
 
         entry->frameIndex = pts;
         entry->outPacket  = packet;
+
+        mOutputCount++;
 
         return C2_OK;
     }

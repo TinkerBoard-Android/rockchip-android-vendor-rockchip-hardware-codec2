@@ -29,11 +29,6 @@ using namespace android;
 extern C2_U32 c2_vdec_debug;
 extern C2_U32 c2_venc_debug;
 
-enum C2OperatorType {
-    C2_OP_INTERNAL      =0,
-    C2_OP_UI
-};
-
 #define C2_SAFE_FREE(p) { if (p) {free(p); (p)=NULL;} }
 #define C2_ALIGN(x, a)         (((x)+(a)-1)&~((a)-1))
 #define C2_ALIGN_ODD(x, a)     (((x)+(a)-1)&~((a)-1) | a)

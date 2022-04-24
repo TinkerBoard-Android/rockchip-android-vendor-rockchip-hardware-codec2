@@ -17,15 +17,11 @@
 #ifndef ANDROID_C2_RK_MPI_ENC_H__
 #define ANDROID_C2_RK_MPI_ENC_H__
 
-#include <stdio.h>
 #include "C2RKComponent.h"
 #include "mpp/rk_mpi.h"
+#include "C2RKMlvecLegacy.h"
 
 namespace android {
-
-enum ExtendedC2ParamIndexKind : C2Param::type_index_t {
-    kParamIndexSceneMode = C2Param::TYPE_INDEX_VENDOR_START,
-};
 
 struct C2RKMpiEnc : public C2RKComponent {
 public:
@@ -68,6 +64,7 @@ private:
 
     std::shared_ptr<IntfImpl> mIntf;
     MyDmaBuffer_t *mDmaMem;
+    C2RKMlvecLegacy *mMlvec;
 
     /* MPI interface parameters */
     MppCtx         mMppCtx;
@@ -83,6 +80,9 @@ private:
     bool           mSignalledError;
     int32_t        mHorStride;
     int32_t        mVerStride;
+    int32_t        mCurLayerCount;
+    int32_t        mInputCount;
+    int32_t        mOutputCount;
 
     /* dump file for debug */
     FILE          *mInFile;
@@ -92,7 +92,6 @@ private:
     // (TODO: keep this in intf but make them internal only)
     std::shared_ptr<C2StreamPictureSizeInfo::input> mSize;
     std::shared_ptr<C2StreamBitrateInfo::output> mBitrate;
-    std::shared_ptr<C2StreamBitrateModeTuning::output> mBitrateMode;
     std::shared_ptr<C2StreamRequestSyncFrameTuning::output> mRequestSync;
 
     void fillEmptyWork(const std::unique_ptr<C2Work> &work);
@@ -112,10 +111,15 @@ private:
     c2_status_t setupQp();
     c2_status_t setupVuiParams();
     c2_status_t setupTemporalLayers();
+    c2_status_t setupPrependHeaderSetting();
+    c2_status_t setupMlvecIfNeccessary();
     c2_status_t setupEncCfg();
 
     c2_status_t initEncoder();
     c2_status_t releaseEncoder();
+
+    c2_status_t handleRequestSyncFrame();
+    c2_status_t handleMlvecDynamicCfg(MppMeta meta);
 
     c2_status_t getInBufferFromWork(
             const std::unique_ptr<C2Work> &work, MyDmaBuffer_t *outBuffer);
