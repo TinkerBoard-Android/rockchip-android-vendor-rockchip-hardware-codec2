@@ -593,6 +593,13 @@ c2_status_t C2RKMpiDec::initDecoder() {
     }
 
     {
+        // enable fast-play mode, ignore the effect of B-frame.
+        uint32_t fastPlay = 1;
+        mMppMpi->control(mMppCtx, MPP_DEC_SET_ENABLE_FAST_PLAY, &fastPlay);
+    }
+
+
+    {
         MppFrame frame  = nullptr;
         uint32_t mppFmt = mColorFormat;
 
