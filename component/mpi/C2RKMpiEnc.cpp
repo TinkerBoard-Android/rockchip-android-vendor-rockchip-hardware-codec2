@@ -1527,6 +1527,9 @@ c2_status_t C2RKMpiEnc::drainInternal(
         c2_warn("DRAIN_CHAIN not supported");
         return C2_OMITTED;
     }
+    if (drainMode == DRAIN_COMPONENT_NO_EOS && !work) {
+        return C2_OK;
+    }
 
     c2_status_t ret = C2_OK;
     OutWorkEntry entry;
