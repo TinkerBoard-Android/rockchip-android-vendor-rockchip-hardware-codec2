@@ -544,11 +544,7 @@ c2_status_t C2RKMpiDec::onFlush_sm() {
     mSignalledError = false;
 
     mWorkQueue.clear();
-    clearOutBuffers();
 
-    if (mFrmGrp) {
-        mpp_buffer_group_clear(mFrmGrp);
-    }
     if (mMppMpi) {
         mMppMpi->reset(mMppCtx);
     }
@@ -581,9 +577,13 @@ c2_status_t C2RKMpiDec::initDecoder() {
     // TODO: workround: CTS-CodecDecoderTest
     // testFlushNative[15(c2.rk.mpeg2.decoder_video/mpeg2)
     if (mCodingType == MPP_VIDEO_CodingMPEG2) {
-        uint32_t deinterlace = 0, split = 1;
-        mMppMpi->control(mMppCtx, MPP_DEC_SET_ENABLE_DEINTERLACE, &deinterlace);
+        uint32_t vmode = 0, split = 1;
+        mMppMpi->control(mMppCtx, MPP_DEC_SET_ENABLE_DEINTERLACE, &vmode);
         mMppMpi->control(mMppCtx, MPP_DEC_SET_PARSER_SPLIT_MODE, &split);
+    } else {
+        // enable deinterlace, but not decting
+        uint32_t vmode = 1;
+        mMppMpi->control(mMppCtx, MPP_DEC_SET_ENABLE_DEINTERLACE, &vmode);
     }
 
     err = mpp_init(mMppCtx, MPP_CTX_DEC, mCodingType);
