@@ -544,6 +544,11 @@ c2_status_t C2RKMpiDec::onFlush_sm() {
     mSignalledError = false;
 
     mWorkQueue.clear();
+    clearOutBuffers();
+
+    if (mFrmGrp) {
+        mpp_buffer_group_clear(mFrmGrp);
+    }
 
     if (mMppMpi) {
         mMppMpi->reset(mMppCtx);
@@ -597,7 +602,6 @@ c2_status_t C2RKMpiDec::initDecoder() {
         uint32_t fastPlay = 1;
         mMppMpi->control(mMppCtx, MPP_DEC_SET_ENABLE_FAST_PLAY, &fastPlay);
     }
-
 
     {
         MppFrame frame  = nullptr;
@@ -950,6 +954,24 @@ outframe:
         if (entry.frameIndex == frameIndex) {
             delayOutput = true;
         }
+        goto outframe;
+    } else if (err == C2_NO_MEMORY) {
+        // update new config and feekback to framework
+        C2StreamPictureSizeInfo::output size(0u, mWidth, mHeight);
+        std::vector<std::unique_ptr<C2SettingResult>> failures;
+        err = mIntf->config({&size}, C2_MAY_BLOCK, &failures);
+        if (err == OK) {
+            work->worklets.front()->output.configUpdate.push_back(
+                C2Param::Copy(size));
+        } else {
+            c2_err("failed to set width and height");
+            mSignalledError = true;
+            work->workletsProcessed = 1u;
+            work->result = C2_CORRUPTED;
+            return;
+        }
+
+        ensureDecoderState(pool);
         goto outframe;
     } else if (outfrmCnt == 0) {
         usleep(1000);
