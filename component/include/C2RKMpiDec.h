@@ -103,6 +103,8 @@ private:
        2. SurfaceMode: with surface
     */
     bool mBufferMode;
+    FILE *mOutFile;
+    FILE *mInFile;
 
     struct FbcConfig {
         uint32_t mode;

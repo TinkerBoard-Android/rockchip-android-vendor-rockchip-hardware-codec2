@@ -34,6 +34,7 @@
 #include "C2RKColorAspects.h"
 #include "C2RKVersion.h"
 #include "C2RKEnv.h"
+#include <sys/syscall.h>
 
 #define FLAG_NON_DISPLAY_FRAME (1u << 15)
 
@@ -479,11 +480,42 @@ C2RKMpiDec::C2RKMpiDec(
       mOutputEos(false),
       mSignalledInputEos(false),
       mSignalledError(false),
-      mBufferMode(false) {
+      mBufferMode(false),
+      mOutFile(nullptr),
+      mInFile(nullptr) {
     c2_info("version: %s", C2_GIT_BUILD_VERSION);
 
     if (!C2RKMediaUtils::getCodingTypeFromComponentName(name, &mCodingType)) {
         c2_err("failed to get codingType from component %s", name);
+    }
+
+    Rockchip_C2_GetEnvU32("vendor.c2.vdec.debug", &c2_vdec_debug, 0);
+    c2_info("vdec_debug: 0x%x", c2_vdec_debug);
+
+    if (c2_vdec_debug & VIDEO_DBG_RECORD_OUT) {
+        char fileName[128];
+        memset(fileName, 0, 128);
+
+        sprintf(fileName, "/data/video/dec_out_%ld.bin", syscall(SYS_gettid));
+        mOutFile = fopen(fileName, "wb");
+        if (mOutFile == nullptr) {
+            c2_err("failed to open output file, err %s", strerror(errno));
+        } else {
+            c2_info("recording output to %s", fileName);
+        }
+    }
+
+    if (c2_vdec_debug & VIDEO_DBG_RECORD_IN) {
+        char fileName[128];
+        memset(fileName, 0, 128);
+
+        sprintf(fileName, "/data/video/dec_in_%ld.bin", syscall(SYS_gettid));
+        mInFile = fopen(fileName, "wb");
+        if (mInFile == nullptr) {
+            c2_err("failed to open output file, err %s", strerror(errno));
+        } else {
+            c2_info("recording output to %s", fileName);
+        }
     }
 }
 
@@ -532,6 +564,15 @@ void C2RKMpiDec::onRelease() {
     if (mMppCtx) {
         mpp_destroy(mMppCtx);
         mMppCtx = nullptr;
+    }
+
+    if (mOutFile != nullptr) {
+        fclose(mOutFile);
+        mOutFile = nullptr;
+    }
+    if (mInFile != nullptr) {
+        fclose(mInFile);
+        mInFile = nullptr;
     }
 }
 
@@ -1034,6 +1075,11 @@ c2_status_t C2RKMpiDec::sendpacket(
     mpp_packet_set_pos(packet, data);
     mpp_packet_set_length(packet, size);
 
+    if (mInFile != nullptr) {
+        fwrite(data, 1, size, mInFile);
+        fflush(mInFile);
+    }
+
     if (flags & C2FrameData::FLAG_END_OF_STREAM) {
         c2_info("send input eos");
         mpp_packet_set_eos(packet);
@@ -1173,6 +1219,11 @@ c2_status_t C2RKMpiDec::getoutframe(OutWorkEntry *entry) {
             outBuffer->site = BUFFER_SITE_BY_C2;
 
             outblock = outBuffer->block;
+            if (mOutFile != nullptr) {
+                uint8_t *src = (uint8_t*)mpp_buffer_get_ptr(mppBuffer);
+                fwrite(src, 1, hstride * vstride * 3 / 2, mOutFile);
+                fflush(mOutFile);
+            }
         }
 
         if (mCodingType == MPP_VIDEO_CodingAVC ||
