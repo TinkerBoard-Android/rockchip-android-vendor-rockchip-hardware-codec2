@@ -87,6 +87,7 @@ private:
     uint32_t mVerStride;
     uint32_t mTransfer;
     int64_t  mLastPts;
+    uint32_t mGeneration;
 
     bool mStarted;
     bool mFlushed;

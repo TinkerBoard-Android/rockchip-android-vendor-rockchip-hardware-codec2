@@ -473,6 +473,7 @@ C2RKMpiDec::C2RKMpiDec(
       mHorStride(0),
       mVerStride(0),
       mLastPts(-1),
+      mGeneration(0),
       mStarted(false),
       mFlushed(false),
       mOutputEos(false),
@@ -542,6 +543,7 @@ c2_status_t C2RKMpiDec::onFlush_sm() {
     mOutputEos = false;
     mSignalledInputEos = false;
     mSignalledError = false;
+    mGeneration = 0;
 
     mWorkQueue.clear();
     clearOutBuffers();
@@ -1232,7 +1234,15 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
     android::_UnwrapNativeCodec2GrallocMetadata(
                 c2Handle, &width, &height, &format, &usage,
                 &stride, &generation, &bqId, &bqSlot);
-
+    if (mGeneration == 0) {
+        mGeneration = generation;
+    } else if (mGeneration != generation) {
+        if (!mBufferMode) {
+            clearOutBuffers();
+            mpp_buffer_group_clear(mFrmGrp);
+        }
+        mGeneration = generation;
+    }
     auto GetC2BlockSize
             = [c2Handle, width, height, format, usage, stride]() -> uint32_t {
         gralloc_private_handle_t pHandle;
@@ -1262,7 +1272,7 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
         buffer->block = block;
         buffer->site = BUFFER_SITE_BY_MPI;
 
-        c2_trace("put this buffer: slot %d fd %d buf %p", bqSlot, fd, mppBuffer);
+        c2_trace("put this buffer: generation %d bpId 0x%llx slot %d fd %d buf %p", generation, bqId, bqSlot, fd, mppBuffer);
     } else {
         /* register this buffer to mpp group */
         MppBuffer mppBuffer;
