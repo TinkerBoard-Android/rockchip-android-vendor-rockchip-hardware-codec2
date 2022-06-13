@@ -150,7 +150,7 @@ private:
     void getVuiParams(MppFrame frame);
     c2_status_t sendpacket(
             uint8_t *data, size_t size, uint64_t pts, uint64_t frmIndex, uint32_t flags);
-    c2_status_t getoutframe(OutWorkEntry *entry);
+    c2_status_t getoutframe(OutWorkEntry *entry, bool needGetFrame);
 
     c2_status_t commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block);
     c2_status_t ensureDecoderState(const std::shared_ptr<C2BlockPool> &pool);

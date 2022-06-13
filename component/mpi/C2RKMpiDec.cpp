@@ -857,7 +857,7 @@ c2_status_t C2RKMpiDec::drainInternal(
             return C2_CORRUPTED;
         }
 
-        ret = getoutframe(&entry);
+        ret = getoutframe(&entry, false);
         if (ret == C2_OK && entry.outblock) {
             finishWork(entry.frameIndex, work, entry.outblock);
         } else if (drainMode == DRAIN_COMPONENT_NO_EOS && !work) {
@@ -941,6 +941,8 @@ void C2RKMpiDec::process(
     bool eos = ((flags & C2FrameData::FLAG_END_OF_STREAM) != 0);
     bool hasPicture = false;
     bool delayOutput = false;
+    bool needGetFrame = false;
+    bool sendPacketFlag = true;
     uint32_t outfrmCnt = 0;
     OutWorkEntry entry;
 
@@ -952,10 +954,15 @@ void C2RKMpiDec::process(
         return;
     }
 
+inPacket:
+    needGetFrame   = false;
+    sendPacketFlag = true;
     // may block, quit util enqueue success.
     err = sendpacket(inData, inSize, frameIndex, timestamp, flags);
     if (err != C2_OK) {
         c2_warn("failed to enqueue packet, pts %lld", timestamp);
+        needGetFrame = true;
+        sendPacketFlag = false;
     } else if (flags & (C2FrameData::FLAG_CODEC_CONFIG | FLAG_NON_DISPLAY_FRAME)) {
         fillEmptyWork(work);
     } else {
@@ -976,9 +983,10 @@ void C2RKMpiDec::process(
 
 outframe:
     if (!eos) {
-        err = getoutframe(&entry);
+        err = getoutframe(&entry, needGetFrame);
         if (err == C2_OK) {
             outfrmCnt++;
+            needGetFrame = false;
             hasPicture = true;
         } else if (err == C2_CORRUPTED) {
             mSignalledError = true;
@@ -1002,6 +1010,9 @@ outframe:
            captured by the user may be discontinuous */
         if (entry.frameIndex == frameIndex) {
             delayOutput = true;
+        }
+        if (sendPacketFlag == false) {
+            goto inPacket;
         }
         goto outframe;
     } else if (err == C2_NO_MEMORY) {
@@ -1121,16 +1132,24 @@ c2_status_t C2RKMpiDec::sendpacket(
     return ret;
 }
 
-c2_status_t C2RKMpiDec::getoutframe(OutWorkEntry *entry) {
+c2_status_t C2RKMpiDec::getoutframe(OutWorkEntry *entry, bool needGetFrame) {
     c2_status_t ret = C2_OK;
     MPP_RET err = MPP_OK;
     MppFrame frame = nullptr;
 
     uint64_t outIndex = 0;
+    uint32_t tryCount = 0;
     std::shared_ptr<C2GraphicBlock> outblock = nullptr;
 
+REDO:
     err = mMppMpi->decode_get_frame(mMppCtx, &frame);
+    tryCount++;
     if (MPP_OK != err || !frame) {
+        if (needGetFrame == true && tryCount < 10) {
+            c2_info("need to get frame");
+            usleep(5*1000);
+            goto REDO;
+        }
         return C2_NOT_FOUND;
     }
 
