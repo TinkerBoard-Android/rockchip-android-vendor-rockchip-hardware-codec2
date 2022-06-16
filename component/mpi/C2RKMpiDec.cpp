@@ -634,6 +634,12 @@ c2_status_t C2RKMpiDec::initDecoder() {
         mMppMpi->control(mMppCtx, MPP_DEC_SET_ENABLE_DEINTERLACE, &vmode);
     }
 
+    {
+        // enable fast mode,
+        uint32_t fastParser = 1;
+        mMppMpi->control(mMppCtx, MPP_DEC_SET_PARSER_FAST_MODE, &fastParser);
+    }
+
     err = mpp_init(mMppCtx, MPP_CTX_DEC, mCodingType);
     if (err != MPP_OK) {
         c2_err("failed to mpp_init, ret %d", err);
