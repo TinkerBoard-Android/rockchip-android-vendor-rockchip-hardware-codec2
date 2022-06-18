@@ -844,7 +844,7 @@ c2_status_t C2RKMpiDec::drainInternal(
 
     while (true){
         ret = ensureDecoderState(pool);
-        if (ret != C2_OK) {
+        if (ret != C2_OK && work) {
             mSignalledError = true;
             work->workletsProcessed = 1u;
             work->result = C2_CORRUPTED;
@@ -1364,6 +1364,8 @@ c2_status_t C2RKMpiDec::ensureDecoderState(
 
     uint64_t usage  = RK_GRALLOC_USAGE_SPECIFY_STRIDE;
     uint32_t format = C2RKMediaUtils::colorFormatMpiToAndroid(mColorFormat, mFbcCfg.mode);
+
+    std::lock_guard<std::mutex> lock(mPoolMutex);
 
     // workround for tencent-video, the application can not deal with crop
     // correctly, so use actual dimention when fetch block, make sure that

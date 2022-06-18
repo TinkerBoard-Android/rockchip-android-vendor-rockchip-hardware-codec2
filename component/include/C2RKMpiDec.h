@@ -21,6 +21,7 @@
 #include "C2RKInterface.h"
 #include "mpp/rk_mpi.h"
 
+#include <mutex>
 #include <utils/Vector.h>
 
 namespace android {
@@ -72,6 +73,7 @@ private:
     } OutWorkEntry;
 
     std::shared_ptr<IntfImpl> mIntf;
+    std::mutex mPoolMutex;
 
     /* MPI interface parameters */
     MppCtx          mMppCtx;
