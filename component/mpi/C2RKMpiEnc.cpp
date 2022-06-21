@@ -1667,14 +1667,20 @@ void C2RKMpiEnc::process(
     }
 
     {
-        // handle dynamic config parameters
-        // TODO set bitrate dynamically
+        // handle dynamic bitrate config.
         IntfImpl::Lock lock = mIntf->lock();
         std::shared_ptr<C2StreamBitrateInfo::output> bitrate = mIntf->getBitrate_l();
         lock.unlock();
         if (bitrate != mBitrate) {
-            c2_info("new bitrate requeset, value %d", bitrate->value);
-            mBitrate = bitrate;
+            int32_t mppErr = 0;
+            setupBitRate();
+            mppErr = mMppMpi->control(mMppCtx, MPP_ENC_SET_CFG, mEncCfg);
+            if (mppErr) {
+                c2_err("failed to setup dynamic bitrate, ret %d", err);
+            } else {
+                c2_info("new bitrate requeset, value %d", bitrate->value);
+                mBitrate = bitrate;
+            }
         }
     }
 
