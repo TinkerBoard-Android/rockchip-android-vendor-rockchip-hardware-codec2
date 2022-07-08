@@ -44,7 +44,7 @@ cc_binary {
 
     // minijail is used to protect against unexpected system calls.
     shared_libs: [
-        "libavservices_minijail_vendor",
+        "libavservices_minijail",
         "libbinder",
         "libcutils", // for properties
         "libdmabufheap",
