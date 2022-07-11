@@ -318,6 +318,13 @@ public:
                     })
                     .withSetter(ColorAspectsSetter, mDefaultColorAspects, mCodedColorAspects)
                     .build());
+
+            addParameter(
+                    DefineParam(mLowLatency, C2_PARAMKEY_LOW_LATENCY_MODE)
+                    .withDefault(new C2GlobalLowLatencyModeTuning(false))
+                    .withFields({C2F(mLowLatency, value)})
+                    .withSetter(Setter<decltype(*mLowLatency)>::NonStrictValueWithNoDeps)
+                    .build());
         }
     }
 
@@ -445,6 +452,11 @@ public:
     std::shared_ptr<C2StreamColorAspectsTuning::output> getDefaultColorAspects_l() {
         return mDefaultColorAspects;
     }
+
+    std::shared_ptr<C2GlobalLowLatencyModeTuning> getLowLatency_l() {
+        return mLowLatency;
+    }
+
 private:
     std::shared_ptr<C2StreamPictureSizeInfo::output> mSize;
     std::shared_ptr<C2StreamMaxPictureSizeTuning::output> mMaxSize;
@@ -456,6 +468,7 @@ private:
     std::shared_ptr<C2StreamColorAspectsTuning::output> mDefaultColorAspects;
     std::shared_ptr<C2StreamColorAspectsInfo::input> mCodedColorAspects;
     std::shared_ptr<C2StreamColorAspectsInfo::output> mColorAspects;
+    std::shared_ptr<C2GlobalLowLatencyModeTuning> mLowLatency;
 };
 
 C2RKMpiDec::C2RKMpiDec(
@@ -480,6 +493,7 @@ C2RKMpiDec::C2RKMpiDec(
       mOutputEos(false),
       mSignalledInputEos(false),
       mSignalledError(false),
+      mLowLatencyMode(false),
       mBufferMode(false),
       mOutFile(nullptr),
       mInFile(nullptr) {
@@ -612,6 +626,7 @@ c2_status_t C2RKMpiDec::initDecoder() {
         mWidth = mIntf->getSize_l()->width;
         mHeight = mIntf->getSize_l()->height;
         mTransfer = (uint32_t)mIntf->getDefaultColorAspects_l()->transfer;
+        mLowLatencyMode = (mIntf->getLowLatency_l()->value > 0) ? true : false ;
     }
 
     c2_info("init: w %d h %d coding %d", mWidth, mHeight, mCodingType);
@@ -650,6 +665,13 @@ c2_status_t C2RKMpiDec::initDecoder() {
         // enable fast-play mode, ignore the effect of B-frame.
         uint32_t fastPlay = 1;
         mMppMpi->control(mMppCtx, MPP_DEC_SET_ENABLE_FAST_PLAY, &fastPlay);
+
+        if (mLowLatencyMode) {
+            uint32_t deinterlace = 0, immediate = 1;
+            c2_info("enable lowLatency, enable mpp immediate-out mode");
+            mMppMpi->control(mMppCtx, MPP_DEC_SET_ENABLE_DEINTERLACE, &deinterlace);
+            mMppMpi->control(mMppCtx, MPP_DEC_SET_IMMEDIATE_OUT, &immediate);
+        }
     }
 
     {
@@ -1035,6 +1057,9 @@ outframe:
         goto outframe;
     } else if (outfrmCnt == 0) {
         usleep(1000);
+        if (mLowLatencyMode && timestamp > 0) {
+            goto outframe;
+        }
     }
 }
 

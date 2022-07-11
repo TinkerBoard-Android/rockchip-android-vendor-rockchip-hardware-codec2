@@ -96,6 +96,7 @@ private:
     bool mOutputEos;
     bool mSignalledInputEos;
     bool mSignalledError;
+    bool mLowLatencyMode;
 
     // C2Work info, <key, value> = <frameIndex, pts>
     std::map<uint64_t, uint64_t> mWorkQueue;
