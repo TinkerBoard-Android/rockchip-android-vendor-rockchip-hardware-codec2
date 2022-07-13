@@ -50,6 +50,8 @@ constexpr uint32_t kMaxVideoHeight = 4320;
 constexpr uint32_t kMaxReferenceCount = 16;
 constexpr size_t kMinInputBufferSize = 2 * 1024 * 1024;
 
+constexpr uint32_t kMaxGegerationClearCount = 100;
+
 class C2RKMpiDec::IntfImpl : public C2RKInterface<void>::BaseParams {
 public:
     explicit IntfImpl(
@@ -488,6 +490,8 @@ C2RKMpiDec::C2RKMpiDec(
       mVerStride(0),
       mLastPts(-1),
       mGeneration(0),
+      mGenerationChange(false),
+      mGenerationCount(0),
       mStarted(false),
       mFlushed(false),
       mOutputEos(false),
@@ -1261,9 +1265,13 @@ REDO:
         } else {
             OutBuffer *outBuffer = findOutBuffer(mppBuffer);
             if (!outBuffer) {
-                c2_err("failed to find output buffer");
-                ret = C2_CORRUPTED;
-                goto exit;
+                c2_err("failed to find output buffer %p", mppBuffer);
+                if (frame) {
+                    mpp_frame_deinit(&frame);
+                    frame = nullptr;
+                }
+                goto REDO;
+
             }
             mpp_buffer_inc_ref(mppBuffer);
             outBuffer->site = BUFFER_SITE_BY_C2;
@@ -1337,12 +1345,14 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
                 &stride, &generation, &bqId, &bqSlot);
     if (mGeneration == 0) {
         mGeneration = generation;
+        mGenerationCount = 1;	
     } else if (mGeneration != generation) {
-        if (!mBufferMode) {
-            clearOutBuffers();
-            mpp_buffer_group_clear(mFrmGrp);
-        }
+        c2_info("change generation");
+        mGenerationChange = true;
         mGeneration = generation;
+        mGenerationCount = 1;
+    } else {
+        mGenerationCount++;
     }
     auto GetC2BlockSize
             = [c2Handle, width, height, format, usage, stride]() -> uint32_t {
@@ -1363,8 +1373,15 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
         return pHandle.size;
     };
 
+
+    if (mGenerationCount > kMaxGegerationClearCount && mGenerationChange) {
+        c2_info("clear old generation buffer");
+        mGenerationChange = false;
+        clearOldGenerationOutBuffers(generation);
+    }
+
     OutBuffer *buffer = findOutBuffer(bqSlot);
-    if (buffer) {
+    if (buffer && buffer->generation == generation) {
         /* commit this buffer back to mpp */
         MppBuffer mppBuffer = buffer->mppBuffer;
         if (mppBuffer) {
@@ -1394,6 +1411,7 @@ c2_status_t C2RKMpiDec::commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block)
         buffer->mppBuffer = mppBuffer;
         buffer->block = block;
         buffer->site = BUFFER_SITE_BY_MPI;
+        buffer->generation = generation;
         mpp_buffer_put(mppBuffer);
 
         mOutBuffers.push(buffer);

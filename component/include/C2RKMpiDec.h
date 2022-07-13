@@ -59,6 +59,8 @@ private:
     typedef struct {
         /* index to find this buffer */
         uint32_t       index;
+        /* index to find surface */
+        uint32_t       generation;
         /* mpp buffer */
         MppBuffer      mppBuffer;
         /* who own this buffer */
@@ -90,7 +92,9 @@ private:
     uint32_t mTransfer;
     int64_t  mLastPts;
     uint32_t mGeneration;
-
+    bool     mGenerationChange;
+    uint32_t mGenerationCount;
+	
     bool mStarted;
     bool mFlushed;
     bool mOutputEos;
@@ -189,6 +193,18 @@ private:
                 delete buffer;
             }
             mOutBuffers.removeAt(0);
+        }
+    }
+
+    void clearOldGenerationOutBuffers(uint32_t generation) {
+        while (!mOutBuffers.isEmpty()) {
+            OutBuffer *buffer = mOutBuffers.editItemAt(0);
+            if (buffer != NULL && buffer->generation != generation) {
+                delete buffer;
+                mOutBuffers.removeAt(0);
+            } else {
+                break;
+            }
         }
     }
 
