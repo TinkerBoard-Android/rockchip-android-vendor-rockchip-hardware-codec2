@@ -54,6 +54,13 @@ private:
         void    *handler; /* buffer_handle_t */
     } MyDmaBuffer_t;
 
+    /* Supported lists for InputFormat */
+    typedef enum {
+        C2_INPUT_FMT_UNKNOWN = 0,
+        C2_INPUT_FMT_YUV420SP,
+        C2_IPNUT_FMT_RGBA,
+    } MyInputFormat;
+
     typedef struct {
         MppPacket outPacket;
         uint64_t  frameIndex;
@@ -67,6 +74,7 @@ private:
     MppApi        *mMppMpi;
     MppEncCfg      mEncCfg;
     MppCodingType  mCodingType;
+    MyInputFormat  mInputFormat;
 
     bool           mStarted;
     bool           mSpsPpsHeaderReceived;

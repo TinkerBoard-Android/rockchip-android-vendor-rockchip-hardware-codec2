@@ -630,7 +630,9 @@ c2_status_t C2RKMpiDec::initDecoder() {
         mWidth = mIntf->getSize_l()->width;
         mHeight = mIntf->getSize_l()->height;
         mTransfer = (uint32_t)mIntf->getDefaultColorAspects_l()->transfer;
-        mLowLatencyMode = (mIntf->getLowLatency_l()->value > 0) ? true : false ;
+        if (mIntf->getLowLatency_l() != nullptr) {
+            mLowLatencyMode = (mIntf->getLowLatency_l()->value > 0) ? true : false ;
+        }
     }
 
     c2_info("init: w %d h %d coding %d", mWidth, mHeight, mCodingType);
@@ -789,8 +791,6 @@ void C2RKMpiDec::finishWork(
     std::shared_ptr<C2Buffer> buffer
             = createGraphicBuffer(std::move(block),
                                   C2Rect(mWidth, mHeight).at(left, top));
-
-    mOutBlock = nullptr;
 
     {
         if (mCodingType == MPP_VIDEO_CodingAVC ||
@@ -1226,8 +1226,17 @@ REDO:
         MppBuffer mppBuffer = mpp_frame_get_buffer(frame);
         bool isI4O2 = (mode & MPP_FRAME_FLAG_IEP_DEI_MASK) == MPP_FRAME_FLAG_IEP_DEI_I4O2;
 
-        c2_trace("get one frame [%d:%d] stride [%d:%d] pts %lld err %d eos %d",
-                 width, height, hstride, vstride, pts, err, eos);
+        // find frameIndex from pts map.
+        for (auto it = mWorkQueue.begin(); it != mWorkQueue.end(); it++) {
+            if (pts == it->second) {
+                outIndex = it->first;
+                mWorkQueue.erase(it);
+                break;
+            }
+        }
+
+        c2_trace("get one frame [%d:%d] stride [%d:%d] pts %lld err %d eos %d frameIndex %d",
+                 width, height, hstride, vstride, pts, err, eos, outIndex);
 
         if (eos) {
             c2_info("get output eos.");
@@ -1290,17 +1299,6 @@ REDO:
         {
             getVuiParams(frame);
         }
-
-        // find frameIndex from pts map.
-        for (auto it = mWorkQueue.begin(); it != mWorkQueue.end(); it++) {
-            if (pts == it->second) {
-                outIndex = it->first;
-                mWorkQueue.erase(it);
-                break;
-            }
-        }
-
-        c2_trace("getoutframe pts %lld outIndex %d", pts, outIndex);
 
         if (outIndex == 0) {
             if (isI4O2) {

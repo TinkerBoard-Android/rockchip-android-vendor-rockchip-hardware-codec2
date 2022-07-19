@@ -687,6 +687,7 @@ C2RKMpiEnc::C2RKMpiEnc(
       mMppMpi(nullptr),
       mEncCfg(nullptr),
       mCodingType(MPP_VIDEO_CodingUnused),
+      mInputFormat(C2_INPUT_FMT_UNKNOWN),
       mStarted(false),
       mSpsPpsHeaderReceived(false),
       mSawInputEOS(false),
@@ -1396,6 +1397,7 @@ c2_status_t C2RKMpiEnc::releaseEncoder() {
     mSawInputEOS = false;
     mOutputEOS = false;
     mSignalledError = false;
+    mInputFormat = C2_INPUT_FMT_UNKNOWN;
 
     if (mEncCfg) {
         mpp_enc_cfg_deinit(mEncCfg);
@@ -1737,15 +1739,28 @@ c2_status_t C2RKMpiEnc::getInBufferFromWork(
         return C2_OK;
     }
 
-    std::shared_ptr<const C2GraphicView> view;
     std::shared_ptr<C2Buffer> inputBuffer = nullptr;
 
     inputBuffer = work->input.buffers[0];
-    view = std::make_shared<const C2GraphicView>(
-            inputBuffer->data().graphicBlocks().front().map().get());
-    const C2GraphicView* const input = view.get();
-    const C2PlanarLayout& layout = input->layout();
     const C2Handle *c2Handle = inputBuffer->data().graphicBlocks().front().handle();
+
+    if (mInputFormat == C2_INPUT_FMT_UNKNOWN) {
+        std::shared_ptr<const C2GraphicView> view;
+
+        view = std::make_shared<const C2GraphicView>(
+                inputBuffer->data().graphicBlocks().front().map().get());
+        const C2PlanarLayout& layout = view.get()->layout();
+
+        if (layout.type == C2PlanarLayout::TYPE_RGBA ||
+            layout.type == C2PlanarLayout::TYPE_RGB) {
+            mInputFormat = C2_IPNUT_FMT_RGBA;
+        } else if (layout.type == C2PlanarLayout::TYPE_YUV) {
+            // TODO more yuv format
+            mInputFormat = C2_INPUT_FMT_YUV420SP;
+        } else {
+            c2_err("Unrecognized plane type: %d", layout.type);
+        }
+    }
 
     uint32_t bqSlot, width, height, format, stride, generation;
     uint64_t usage, bqId;
@@ -1775,18 +1790,19 @@ c2_status_t C2RKMpiEnc::getInBufferFromWork(
         native_handle_delete(grallocHandle);
     }
 
-    c2_trace("in buffer attr. w %d h %d stride %d layout 0x%x frameIndex %lld",
-             width, height, stride, layout.type, frameIndex);
+    c2_trace("in buffer attr. w %d h %d stride %d inputFmt %d frameIndex %lld",
+             width, height, stride, mInputFormat, frameIndex);
 
-    switch (layout.type) {
-    case C2PlanarLayout::TYPE_RGB:
-        [[fallthrough]];
-    case C2PlanarLayout::TYPE_RGBA: {
+    switch (mInputFormat) {
+    case C2_IPNUT_FMT_RGBA: {
         RgaParam src, dst;
         uint32_t fd = c2Handle->data[0];
 
         if (mInFile != nullptr) {
-            fwrite(input->data()[0], 1, stride * height * 4, mInFile);
+            std::shared_ptr<const C2GraphicView> view;
+            view = std::make_shared<const C2GraphicView>(
+                    inputBuffer->data().graphicBlocks().front().map().get());
+            fwrite(view.get()->data()[0], 1, stride * height * 4, mInFile);
             fflush(mInFile);
         }
 
@@ -1802,16 +1818,14 @@ c2_status_t C2RKMpiEnc::getInBufferFromWork(
         outBuffer->fd = mDmaMem->fd;
         outBuffer->size = mHorStride * mVerStride * 3 / 2;
     } break;
-    case C2PlanarLayout::TYPE_YUV: {
+    case C2_INPUT_FMT_YUV420SP: {
         uint32_t fd = c2Handle->data[0];
 
-        if (!IsYUV420(*input)) {
-            c2_err("input is not YUV420");
-            return C2_BAD_VALUE;
-        }
-
         if (mInFile != nullptr) {
-            fwrite(input->data()[0], 1, stride * height * 3 / 2, mInFile);
+            std::shared_ptr<const C2GraphicView> view;
+            view = std::make_shared<const C2GraphicView>(
+                    inputBuffer->data().graphicBlocks().front().map().get());
+            fwrite(view.get()->data()[0], 1, stride * height * 3 / 2, mInFile);
             fflush(mInFile);
         }
 
@@ -1857,7 +1871,7 @@ c2_status_t C2RKMpiEnc::getInBufferFromWork(
         }
     } break;
     default:
-        c2_err("Unrecognized plane type: %d", layout.type);
+        c2_err("Unknown input format: %d", mInputFormat);
         ret = C2_BAD_VALUE;
     }
 
@@ -1869,10 +1883,6 @@ c2_status_t C2RKMpiEnc::sendframe(
     int err = 0;
     c2_status_t ret = C2_OK;
     MppFrame frame = nullptr;
-
-    MppBufferInfo commit;
-    memset(&commit, 0, sizeof(commit));
-    commit.type = MPP_BUFFER_TYPE_ION;
 
     mpp_frame_init(&frame);
 
@@ -1907,7 +1917,11 @@ c2_status_t C2RKMpiEnc::sendframe(
 
     if (dBuffer.fd > 0) {
         MppBuffer buffer = nullptr;
+        MppBufferInfo commit;
 
+        memset(&commit, 0, sizeof(commit));
+
+        commit.type = MPP_BUFFER_TYPE_ION;
         commit.fd = dBuffer.fd;
         commit.size = dBuffer.size;
 
