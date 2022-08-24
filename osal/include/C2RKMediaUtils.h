@@ -55,7 +55,8 @@ static const struct ComponentMapEntry {
     { "c2.rk.mpeg2.decoder.secure", MPP_VIDEO_CodingMPEG2, MEDIA_MIMETYPE_VIDEO_MPEG2, MPP_CTX_DEC },
     { "c2.rk.m4v.decoder.secure", MPP_VIDEO_CodingMPEG4, MEDIA_MIMETYPE_VIDEO_MPEG4, MPP_CTX_DEC },
     { "c2.rk.avc.encoder", MPP_VIDEO_CodingAVC, MEDIA_MIMETYPE_VIDEO_AVC, MPP_CTX_ENC },
-    { "c2.rk.hevc.encoder", MPP_VIDEO_CodingHEVC, MEDIA_MIMETYPE_VIDEO_HEVC, MPP_CTX_ENC }
+    { "c2.rk.hevc.encoder", MPP_VIDEO_CodingHEVC, MEDIA_MIMETYPE_VIDEO_HEVC, MPP_CTX_ENC },
+    { "c2.rk.vp8.encoder", MPP_VIDEO_CodingVP8, MEDIA_MIMETYPE_VIDEO_VP8, MPP_CTX_ENC }
 };
 
 class C2RKMediaUtils {

@@ -261,6 +261,18 @@ public:
                     })
                     .withSetter(HEVCProfileLevelSetter, mSize, mFrameRate, mBitrate)
                     .build());
+        } else {
+            addParameter(
+                    DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
+                    .withDefault(new C2StreamProfileLevelInfo::output(
+                            0u, PROFILE_UNUSED, LEVEL_UNUSED))
+                    .withFields({
+                        C2F(mProfileLevel, profile).any(),
+                        C2F(mProfileLevel, level).any(),
+                    })
+                    .withSetter(DefaultProfileLevelSetter, mSize, mFrameRate, mBitrate)
+                    .build());
+
         }
 
         addParameter(
@@ -669,6 +681,20 @@ public:
             // We set to the highest supported level.
             me.set().level = LEVEL_HEVC_MAIN_4_1;
         }
+        return C2R::Ok();
+    }
+
+    static C2R DefaultProfileLevelSetter(
+            bool mayBlock,
+            C2P<C2StreamProfileLevelInfo::output> &me,
+            const C2P<C2StreamPictureSizeInfo::input> &size,
+            const C2P<C2StreamFrameRateInfo::output> &frameRate,
+            const C2P<C2StreamBitrateInfo::output> &bitrate) {
+        (void)mayBlock;
+        (void)me;
+        (void)size;
+        (void)frameRate;
+        (void)bitrate;
         return C2R::Ok();
     }
 
@@ -1642,7 +1668,12 @@ c2_status_t C2RKMpiEnc::initEncoder() {
 
     /* default stride */
     mHorStride = C2_ALIGN(mSize->width, 16);
-    mVerStride = C2_ALIGN(mSize->height, 8);
+    if (mCodingType == MPP_VIDEO_CodingVP8) {
+        mVerStride = C2_ALIGN(mSize->height, 16);
+    } else {
+        mVerStride = C2_ALIGN(mSize->height, 8);
+    }
+
 
     /*
      * create vpumem for mpp input
