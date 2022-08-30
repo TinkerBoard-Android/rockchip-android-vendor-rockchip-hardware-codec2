@@ -792,6 +792,8 @@ void C2RKMpiDec::finishWork(
             = createGraphicBuffer(std::move(block),
                                   C2Rect(mWidth, mHeight).at(left, top));
 
+    mOutBlock = nullptr;
+
     {
         if (mCodingType == MPP_VIDEO_CodingAVC ||
             mCodingType == MPP_VIDEO_CodingHEVC ||
