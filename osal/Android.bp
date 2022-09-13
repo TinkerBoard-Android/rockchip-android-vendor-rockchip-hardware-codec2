@@ -9,6 +9,7 @@ cc_library_static {
         "C2RKFbcDef.cpp",
         "C2RKRgaDef.cpp",
         "C2RKMediaUtils.cpp",
+        "C2RKGrallocDef.cpp",
     ],
 
     shared_libs: [

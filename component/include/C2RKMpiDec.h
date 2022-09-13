@@ -89,12 +89,13 @@ private:
     uint32_t mHeight;
     uint32_t mHorStride;
     uint32_t mVerStride;
+    uint32_t mGrallocVersion;
     uint32_t mTransfer;
     int64_t  mLastPts;
     uint32_t mGeneration;
     bool     mGenerationChange;
     uint32_t mGenerationCount;
-	
+
     bool mStarted;
     bool mFlushed;
     bool mOutputEos;

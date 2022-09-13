@@ -31,6 +31,7 @@
 #include "C2RKMediaUtils.h"
 #include "C2RKRgaDef.h"
 #include "C2RKFbcDef.h"
+#include "C2RKGrallocDef.h"
 #include "C2RKColorAspects.h"
 #include "C2RKVersion.h"
 #include "C2RKEnv.h"
@@ -488,6 +489,7 @@ C2RKMpiDec::C2RKMpiDec(
       mHeight(0),
       mHorStride(0),
       mVerStride(0),
+      mGrallocVersion(0),
       mLastPts(-1),
       mGeneration(0),
       mGenerationChange(false),
@@ -505,6 +507,15 @@ C2RKMpiDec::C2RKMpiDec(
 
     if (!C2RKMediaUtils::getCodingTypeFromComponentName(name, &mCodingType)) {
         c2_err("failed to get codingType from component %s", name);
+    }
+
+    /*
+     * only a few chips, and the version above Android 11 supports gralloc 4.0
+     */
+    uint32_t grallocVersion = C2RKGrallocDef::getGrallocVersion();
+    uint32_t androidVersion = C2RKGrallocDef::getAndroidVerison();
+    if (grallocVersion > 3 && androidVersion >= 30) {
+        mGrallocVersion = 4;
     }
 
     Rockchip_C2_GetEnvU32("vendor.c2.vdec.debug", &c2_vdec_debug, 0);
@@ -1438,7 +1449,8 @@ c2_status_t C2RKMpiDec::ensureDecoderState(
     // workround for tencent-video, the application can not deal with crop
     // correctly, so use actual dimention when fetch block, make sure that
     // the output buffer carries all info needed.
-    if (format == HAL_PIXEL_FORMAT_YCrCb_NV12 && mWidth != mHorStride) {
+    // note: private grallc flag only support gralloc 4.0
+    if (mGrallocVersion == 4 && format == HAL_PIXEL_FORMAT_YCrCb_NV12 && mWidth != mHorStride) {
         blockW = mWidth;
         usage = C2RKMediaUtils::getStrideUsage(mWidth, mHorStride);
     }
@@ -1453,6 +1465,9 @@ c2_status_t C2RKMpiDec::ensureDecoderState(
             format == HAL_PIXEL_FORMAT_Y210) {
             blockW = C2_ALIGN(mWidth, 64);
         }
+    } else if (mCodingType == MPP_VIDEO_CodingVP9 && mGrallocVersion < 4) {
+        // vp9 need odd 256 align
+        blockW = C2_ALIGN_ODD(mWidth, 256);
     }
 
     switch(mTransfer) {
