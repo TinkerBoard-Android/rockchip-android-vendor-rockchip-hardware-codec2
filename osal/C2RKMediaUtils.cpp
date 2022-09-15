@@ -100,7 +100,8 @@ bool C2RKMediaUtils::getDomainFromComponentName(C2String componentName, C2Compon
         case MPP_VIDEO_CodingVP8:
         case MPP_VIDEO_CodingMPEG2:
         case MPP_VIDEO_CodingMPEG4:
-        case MPP_VIDEO_CodingH263: {
+        case MPP_VIDEO_CodingH263:
+        case MPP_VIDEO_CodingAV1: {
             tmp_domain = C2Component::DOMAIN_VIDEO;
         } break;
         default: {

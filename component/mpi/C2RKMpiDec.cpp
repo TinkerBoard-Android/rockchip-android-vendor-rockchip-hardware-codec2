@@ -242,9 +242,28 @@ public:
                      })
                     .withSetter(ProfileLevelSetter, mSize)
                     .build());
-        } else if (mediaType == MEDIA_MIMETYPE_VIDEO_VP8) {
-            // TODO
-         }
+        } else if (mediaType == MEDIA_MIMETYPE_VIDEO_AV1) {
+            addParameter(
+                    DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
+                    .withDefault(new C2StreamProfileLevelInfo::input(0u,
+                            C2Config::PROFILE_AV1_0, C2Config::LEVEL_AV1_7_3))
+                    .withFields({
+                        C2F(mProfileLevel, profile).oneOf({
+                                C2Config::PROFILE_AV1_0,
+                                C2Config::PROFILE_AV1_0}),
+                        C2F(mProfileLevel, level).oneOf({
+                                C2Config::LEVEL_AV1_2, C2Config::LEVEL_AV1_2_1, C2Config::LEVEL_AV1_2_2,
+                                C2Config::LEVEL_AV1_2_3, C2Config::LEVEL_AV1_3, C2Config::LEVEL_AV1_3_1,
+                                C2Config::LEVEL_AV1_3_2, C2Config::LEVEL_AV1_3_3, C2Config::LEVEL_AV1_4,
+                                C2Config::LEVEL_AV1_4_1, C2Config::LEVEL_AV1_4_2, C2Config::LEVEL_AV1_4_3,
+                                C2Config::LEVEL_AV1_5, C2Config::LEVEL_AV1_5_1, C2Config::LEVEL_AV1_5_2,
+                                C2Config::LEVEL_AV1_5_3, C2Config::LEVEL_AV1_6, C2Config::LEVEL_AV1_6_1,
+                                C2Config::LEVEL_AV1_6_2, C2Config::LEVEL_AV1_6_3, C2Config::LEVEL_AV1_7,
+                                C2Config::LEVEL_AV1_7_1, C2Config::LEVEL_AV1_7_2, C2Config::LEVEL_AV1_7_3})
+                     })
+                    .withSetter(ProfileLevelSetter, mSize)
+                    .build());
+        }
 
         // max input buffer size
         addParameter(
