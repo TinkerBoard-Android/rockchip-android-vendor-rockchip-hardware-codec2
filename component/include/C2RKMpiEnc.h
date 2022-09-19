@@ -72,6 +72,8 @@ private:
     MppEncCfg      mEncCfg;
     MppCodingType  mCodingType;
     MyInputFormat  mInputFormat;
+    MppFrameFormat mMppFormat;
+    int32_t        mChipType;
 
     bool           mStarted;
     bool           mSpsPpsHeaderReceived;

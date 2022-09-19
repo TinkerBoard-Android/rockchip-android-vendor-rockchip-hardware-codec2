@@ -40,6 +40,7 @@
 #include "C2RKCodecMapper.h"
 #include "C2RKVideoGlobal.h"
 #include "C2RKVersion.h"
+#include "C2RKChips.h"
 
 namespace android {
 
@@ -916,6 +917,8 @@ C2RKMpiEnc::C2RKMpiEnc(
       mEncCfg(nullptr),
       mCodingType(MPP_VIDEO_CodingUnused),
       mInputFormat(C2_INPUT_FMT_UNKNOWN),
+      mMppFormat(MPP_FMT_BUTT),
+      mChipType(0),
       mStarted(false),
       mSpsPpsHeaderReceived(false),
       mSawInputEOS(false),
@@ -934,6 +937,7 @@ C2RKMpiEnc::C2RKMpiEnc(
         c2_err("failed to get MppCodingType from component %s", name);
     }
 
+    RKChipInfo *chipInfo = getChipName();
     Rockchip_C2_GetEnvU32("vendor.c2.venc.debug", &c2_venc_debug, 0);
     c2_info("venc_debug: 0x%x", c2_venc_debug);
 
@@ -962,6 +966,7 @@ C2RKMpiEnc::C2RKMpiEnc(
             c2_info("recording output to %s", fileName);
         }
     }
+    mChipType = chipInfo->type;
 }
 
 C2RKMpiEnc::~C2RKMpiEnc() {
@@ -1003,10 +1008,21 @@ c2_status_t C2RKMpiEnc::setupBaseCodec() {
 
     mpp_enc_cfg_set_s32(mEncCfg, "prep:width", mSize->width);
     mpp_enc_cfg_set_s32(mEncCfg, "prep:height", mSize->height);
-    mpp_enc_cfg_set_s32(mEncCfg, "prep:hor_stride", mHorStride);
     mpp_enc_cfg_set_s32(mEncCfg, "prep:ver_stride", mVerStride);
-    mpp_enc_cfg_set_s32(mEncCfg, "prep:format", MPP_FMT_YUV420SP);
+    mpp_enc_cfg_set_s32(mEncCfg, "prep:format", mMppFormat);
     mpp_enc_cfg_set_s32(mEncCfg, "prep:rotation", MPP_ENC_ROT_0);
+
+    switch(mMppFormat) {
+    case MPP_FMT_RGBA8888:
+        mpp_enc_cfg_set_s32(mEncCfg, "prep:hor_stride", mHorStride*4);
+        break;
+    case MPP_FMT_YUV420P:
+    case MPP_FMT_YUV420SP:
+        mpp_enc_cfg_set_s32(mEncCfg, "prep:hor_stride", mHorStride);
+        break;
+    default:
+         break;
+    }
 
     return C2_OK;
 }
@@ -1730,13 +1746,6 @@ c2_status_t C2RKMpiEnc::initEncoder() {
         goto error;
     }
 
-    ret = setupEncCfg();
-    if (ret) {
-        c2_err("failed to set config, ret=0x%x", ret);
-        ret = C2_CORRUPTED;
-        goto error;
-    }
-
     mStarted = true;
 
     return C2_OK;
@@ -2201,6 +2210,7 @@ c2_status_t C2RKMpiEnc::handleMlvecDynamicCfg(MppMeta meta) {
 c2_status_t C2RKMpiEnc::getInBufferFromWork(
         const std::unique_ptr<C2Work> &work, MyDmaBuffer_t *outBuffer) {
     c2_status_t ret = C2_OK;
+    MppFrameFormat mppFormat;
     uint64_t frameIndex = work->input.ordinal.frameIndex.peekull();
 
     if (work->input.buffers.empty()) {
@@ -2223,8 +2233,27 @@ c2_status_t C2RKMpiEnc::getInBufferFromWork(
         if (layout.type == C2PlanarLayout::TYPE_RGBA ||
             layout.type == C2PlanarLayout::TYPE_RGB) {
             mInputFormat = C2_IPNUT_FMT_RGBA;
+            mppFormat    = MPP_FMT_RGBA8888;
         } else if (layout.type == C2PlanarLayout::TYPE_YUV) {
             // TODO more yuv format
+       #if 0
+            int32_t yStride = layout.planes[C2PlanarLayout::PLANE_Y].rowInc;
+            int32_t uStride = layout.planes[C2PlanarLayout::PLANE_U].rowInc;
+            int32_t vStride = layout.planes[C2PlanarLayout::PLANE_V].rowInc;
+            c2_info("layout.planes[layout.PLANE_Y].colInc %d", layout.planes[layout.PLANE_Y].colInc);
+            c2_info("layout.planes[layout.PLANE_U].colInc %d", layout.planes[layout.PLANE_U].colInc);
+            c2_info("layout.planes[layout.PLANE_V].colInc %d", layout.planes[layout.PLANE_V].colInc);
+            if (layout.planes[layout.PLANE_Y].colInc == 1
+                    && layout.planes[layout.PLANE_U].colInc == 1
+                    && layout.planes[layout.PLANE_V].colInc == 1
+                    && uStride == vStride
+                    && yStride == 2 * vStride) {
+                mppFormat = MPP_FMT_YUV420P;
+            } else
+       #endif
+            {
+                mppFormat = MPP_FMT_YUV420SP;
+            }
             mInputFormat = C2_INPUT_FMT_YUV420SP;
         } else {
             c2_err("Unrecognized plane type: %d", layout.type);
@@ -2274,18 +2303,23 @@ c2_status_t C2RKMpiEnc::getInBufferFromWork(
             fwrite(view.get()->data()[0], 1, stride * height * 4, mInFile);
             fflush(mInFile);
         }
-
-        C2RKRgaDef::paramInit(&src, fd, width, height, stride, height);
-        C2RKRgaDef::paramInit(&dst, mDmaMem->fd,
+        if (mChipType == RK_CHIP_3588) {
+            outBuffer->fd = fd;
+            outBuffer->size = mHorStride * mVerStride * 4;
+        } else {
+            C2RKRgaDef::paramInit(&src, fd, width, height, stride, height);
+            C2RKRgaDef::paramInit(&dst, mDmaMem->fd,
                               mSize->width, mSize->height, mHorStride, mVerStride);
 
-        if (!C2RKRgaDef::rgbToNv12(src, dst)) {
-            c2_err("faild to convert rgba to nv12");
-            ret = C2_CORRUPTED;
-        }
+            if (!C2RKRgaDef::rgbToNv12(src, dst)) {
+                c2_err("faild to convert rgba to nv12");
+                ret = C2_CORRUPTED;
+            }
 
-        outBuffer->fd = mDmaMem->fd;
-        outBuffer->size = mHorStride * mVerStride * 3 / 2;
+            outBuffer->fd = mDmaMem->fd;
+            outBuffer->size = mHorStride * mVerStride * 3 / 2;
+            mppFormat = MPP_FMT_YUV420SP;
+        }
     } break;
     case C2_INPUT_FMT_YUV420SP: {
         uint32_t fd = c2Handle->data[0];
@@ -2305,7 +2339,8 @@ c2_status_t C2RKMpiEnc::getInBufferFromWork(
          * copy input buffer to anothor larger dmaBuffer, and than import
          * this dmaBuffer to encoder.
          */
-        if ((stride & 0xf) || (height & 0xf)) {
+        if (((mChipType != RK_CHIP_3588) && ((stride & 0xf) || (height & 0xf)))
+          || ((mChipType == RK_CHIP_3588) && ((stride & 0xf) || (height & 0x2)))) {
             RgaParam src, dst;
 
             C2RKRgaDef::paramInit(&src, fd, width, height, stride, height);
@@ -2344,6 +2379,14 @@ c2_status_t C2RKMpiEnc::getInBufferFromWork(
         ret = C2_BAD_VALUE;
     }
 
+    if (mMppFormat == MPP_FMT_BUTT) {
+        mMppFormat = mppFormat;
+        ret = setupEncCfg();
+        if (ret) {
+            c2_err("failed to set config, ret=0x%x", ret);
+            ret = C2_CORRUPTED;
+        }
+    }
     return ret;
 }
 
@@ -2387,10 +2430,20 @@ c2_status_t C2RKMpiEnc::sendframe(
 
     mpp_frame_set_width(frame, mSize->width);
     mpp_frame_set_height(frame, mSize->height);
-    mpp_frame_set_hor_stride(frame, mHorStride);
     mpp_frame_set_ver_stride(frame, mVerStride);
     mpp_frame_set_pts(frame, pts);
-    mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
+    mpp_frame_set_fmt(frame, mMppFormat);
+    switch(mMppFormat) {
+    case MPP_FMT_RGBA8888:
+        mpp_frame_set_hor_stride(frame, mHorStride*4);
+        break;
+    case MPP_FMT_YUV420P:
+    case MPP_FMT_YUV420SP:
+        mpp_frame_set_hor_stride(frame, mHorStride);
+        break;
+    default:
+         break;
+    }
 
     /* handle dynamic configurations from teams mlvec */
     if (mMlvec) {
