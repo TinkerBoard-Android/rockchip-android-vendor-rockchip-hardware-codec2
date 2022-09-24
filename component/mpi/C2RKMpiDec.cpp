@@ -227,7 +227,12 @@ public:
                                 C2Config::LEVEL_VP9_3_1,
                                 C2Config::LEVEL_VP9_4,
                                 C2Config::LEVEL_VP9_4_1,
-                                C2Config::LEVEL_VP9_5})
+                                C2Config::LEVEL_VP9_5,
+                                C2Config::LEVEL_VP9_5_1,
+                                C2Config::LEVEL_VP9_5_2,
+                                C2Config::LEVEL_VP9_6,
+                                C2Config::LEVEL_VP9_6_1,
+                                C2Config::LEVEL_VP9_6_2})
                      })
                     .withSetter(ProfileLevelSetter, mSize)
                     .build());
