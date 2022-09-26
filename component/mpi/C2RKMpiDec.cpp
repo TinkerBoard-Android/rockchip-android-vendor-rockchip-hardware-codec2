@@ -1233,6 +1233,11 @@ REDO:
         mHorStride = hstride;
         mVerStride = vstride;
         mColorFormat = format;
+        if (MPP_FRAME_FMT_IS_FBC(mColorFormat)) {
+            mFbcCfg.mode = RT_COMPRESS_AFBC_16x16;
+        } else {
+            mFbcCfg.mode = 0;
+        }
 
         ret = C2_NO_MEMORY;
     } else {
