@@ -25,9 +25,7 @@
 #include <media/stagefright/foundation/Mutexed.h>
 #include "C2Component.h"
 
-
-#define I2O4INDEX 0xEFFFFFFE
-
+#define OUTPUT_WORK_INDEX            INT64_MAX
 
 namespace android {
 
@@ -122,10 +120,8 @@ protected:
      * \param[in]   frameIndex    the index of the pending work
      * \param[in]   fillWork      the function to fill the retrieved work.
      */
-    void finish(
-            uint64_t frameIndex,
-            std::function<void(const std::unique_ptr<C2Work> &)> fillWork,
-            bool delayOutput = false);
+    void finish(uint64_t frameIndex,
+            std::function<void(const std::unique_ptr<C2Work> &)> fillWork);
 
     void finish(
         std::unique_ptr<C2Work> &work,

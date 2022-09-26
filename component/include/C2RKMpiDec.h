@@ -71,7 +71,7 @@ private:
 
     typedef struct {
         std::shared_ptr<C2GraphicBlock> outblock;
-        uint64_t frameIndex;
+        uint64_t timestamp;
     } OutWorkEntry;
 
     std::shared_ptr<IntfImpl> mIntf;
@@ -102,9 +102,6 @@ private:
     bool mSignalledInputEos;
     bool mSignalledError;
     bool mLowLatencyMode;
-
-    // C2Work info, <key, value> = <frameIndex, pts>
-    std::map<uint64_t, uint64_t> mWorkQueue;
 
     /*
        1. BufferMode:  without surcace
@@ -142,11 +139,7 @@ private:
     } mBitstreamColorAspects;
 
     void fillEmptyWork(const std::unique_ptr<C2Work> &work);
-    void finishWork(
-            uint64_t index,
-            const std::unique_ptr<C2Work> &work,
-            const std::shared_ptr<C2GraphicBlock> block,
-            bool delayOutput = false);
+    void finishWork(OutWorkEntry *entry);
     c2_status_t drainInternal(
         uint32_t drainMode,
         const std::shared_ptr<C2BlockPool> &pool,
@@ -155,7 +148,7 @@ private:
     c2_status_t initDecoder();
     void getVuiParams(MppFrame frame);
     c2_status_t sendpacket(
-            uint8_t *data, size_t size, uint64_t pts, uint64_t frmIndex, uint32_t flags);
+            uint8_t *data, size_t size, uint64_t pts, uint32_t flags);
     c2_status_t getoutframe(OutWorkEntry *entry, bool needGetFrame);
 
     c2_status_t commitBufferToMpp(std::shared_ptr<C2GraphicBlock> block);

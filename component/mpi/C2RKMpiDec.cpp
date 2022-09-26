@@ -37,8 +37,6 @@
 #include "C2RKEnv.h"
 #include <sys/syscall.h>
 
-#define FLAG_NON_DISPLAY_FRAME (1u << 15)
-
 namespace android {
 
 constexpr uint32_t kDefaultOutputDelay = 16;
@@ -645,7 +643,6 @@ c2_status_t C2RKMpiDec::onFlush_sm() {
     mSignalledError = false;
     mGeneration = 0;
 
-    mWorkQueue.clear();
     clearOutBuffers();
 
     if (mFrmGrp) {
@@ -816,13 +813,9 @@ void C2RKMpiDec::fillEmptyWork(const std::unique_ptr<C2Work> &work) {
     work->workletsProcessed = 1u;
 }
 
-void C2RKMpiDec::finishWork(
-        uint64_t index,
-        const std::unique_ptr<C2Work> &work,
-        const std::shared_ptr<C2GraphicBlock> block,
-        bool delayOutput) {
-    if (!block) {
-        c2_err("empty block index %d", index);
+void C2RKMpiDec::finishWork(OutWorkEntry *entry) {
+    if (!entry->outblock) {
+        c2_err("empty block, finish work failed.");
         return;
     }
 
@@ -830,7 +823,7 @@ void C2RKMpiDec::finishWork(
     uint32_t top  = mFbcCfg.mode ? mFbcCfg.paddingY : 0;
 
     std::shared_ptr<C2Buffer> buffer
-            = createGraphicBuffer(std::move(block),
+            = createGraphicBuffer(std::move(entry->outblock),
                                   C2Rect(mWidth, mHeight).at(left, top));
 
     mOutBlock = nullptr;
@@ -844,57 +837,24 @@ void C2RKMpiDec::finishWork(
         }
     }
 
-    class FillWork {
-       public:
-        FillWork(uint32_t flags, C2WorkOrdinalStruct ordinal,
-                 const std::shared_ptr<C2Buffer>& buffer)
-            : mFlags(flags), mOrdinal(ordinal), mBuffer(buffer) {}
-        ~FillWork() = default;
-
-        void operator()(const std::unique_ptr<C2Work>& work) {
-            work->worklets.front()->output.flags = (C2FrameData::flags_t)mFlags;
-            work->worklets.front()->output.buffers.clear();
-            work->worklets.front()->output.ordinal = mOrdinal;
-            work->workletsProcessed = 1u;
-            work->result = C2_OK;
-            if (mBuffer) {
-                work->worklets.front()->output.buffers.push_back(mBuffer);
-            }
-            c2_trace("timestamp = %lld, index = %lld, w/%s buffer",
-                     mOrdinal.timestamp.peekll(), mOrdinal.frameIndex.peekll(),
-                     mBuffer ? "" : "o");
-        }
-
-       private:
-        const uint32_t mFlags;
-        const C2WorkOrdinalStruct mOrdinal;
-        const std::shared_ptr<C2Buffer> mBuffer;
-    };
-
-    auto fillWork = [buffer](const std::unique_ptr<C2Work> &work) {
-        work->worklets.front()->output.flags = (C2FrameData::flags_t)0;
+    auto fillWork = [buffer, entry](const std::unique_ptr<C2Work> &work) {
+        // now output work is new work, frame index remove by input work,
+        // output work set to incomplete to ignore frame index check
+        work->worklets.front()->output.flags = C2FrameData::FLAG_INCOMPLETE;
         work->worklets.front()->output.buffers.clear();
         work->worklets.front()->output.buffers.push_back(buffer);
         work->worklets.front()->output.ordinal = work->input.ordinal;
+        work->worklets.front()->output.ordinal.timestamp = entry->timestamp;
         work->workletsProcessed = 1u;
     };
 
-    if (work && c2_cntr64_t(index) == work->input.ordinal.frameIndex) {
-        bool eos = ((work->input.flags & C2FrameData::FLAG_END_OF_STREAM) != 0);
-        if (eos) {
-            if (buffer) {
-                C2WorkOrdinalStruct outOrdinal = work->input.ordinal;
-                cloneAndSend(
-                    index, work,
-                    FillWork(C2FrameData::FLAG_INCOMPLETE, outOrdinal, buffer));
-                buffer.reset();
-            }
-        } else {
-            fillWork(work);
-        }
-    } else {
-        finish(index, fillWork, delayOutput);
-    }
+    std::unique_ptr<C2Work> outputWork(new C2Work);
+    outputWork->worklets.clear();
+    outputWork->worklets.emplace_back(new C2Worklet);
+    outputWork->input.ordinal.timestamp = 0;
+    outputWork->input.ordinal.frameIndex = OUTPUT_WORK_INDEX;
+    outputWork->input.ordinal.customOrdinal = 0;
+    finish(outputWork, fillWork);
 }
 
 c2_status_t C2RKMpiDec::drainInternal(
@@ -928,13 +888,13 @@ c2_status_t C2RKMpiDec::drainInternal(
 
         ret = getoutframe(&entry, false);
         if (ret == C2_OK && entry.outblock) {
-            finishWork(entry.frameIndex, work, entry.outblock);
+            finishWork(&entry);
         } else if (drainMode == DRAIN_COMPONENT_NO_EOS && !work) {
             c2_info_f("drain without wait eos, done.");
             break;
         }
 
-        if (mOutputEos) {
+        if (mOutputEos && work) {
             fillEmptyWork(work);
             break;
         }
@@ -1009,7 +969,6 @@ void C2RKMpiDec::process(
 
     bool eos = ((flags & C2FrameData::FLAG_END_OF_STREAM) != 0);
     bool hasPicture = false;
-    bool delayOutput = false;
     bool needGetFrame = false;
     bool sendPacketFlag = true;
     uint32_t outfrmCnt = 0;
@@ -1027,15 +986,13 @@ inPacket:
     needGetFrame   = false;
     sendPacketFlag = true;
     // may block, quit util enqueue success.
-    err = sendpacket(inData, inSize, frameIndex, timestamp, flags);
+    err = sendpacket(inData, inSize, timestamp, flags);
     if (err != C2_OK) {
         c2_warn("failed to enqueue packet, pts %lld", timestamp);
         needGetFrame = true;
         sendPacketFlag = false;
-    } else if (flags & (C2FrameData::FLAG_CODEC_CONFIG | FLAG_NON_DISPLAY_FRAME)) {
-        fillEmptyWork(work);
     } else {
-        if (inSize == 0 && !eos) {
+        if (!eos) {
             fillEmptyWork(work);
         }
 
@@ -1043,10 +1000,6 @@ inPacket:
         // testFlushNative[15(c2.rk.mpeg2.decoder_video/mpeg2)
         if (mLastPts != timestamp) {
             mLastPts = timestamp;
-        } else if (mCodingType == MPP_VIDEO_CodingMPEG2) {
-            if (!eos) {
-                fillEmptyWork(work);
-            }
         }
     }
 
@@ -1069,17 +1022,11 @@ outframe:
         drainInternal(DRAIN_COMPONENT_WITH_EOS, pool, work);
         mSignalledInputEos = true;
     } else if (hasPicture) {
-        finishWork(entry.frameIndex, work, entry.outblock, delayOutput);
+        finishWork(&entry);
         /* Avoid stock frame, continue to search available output */
         ensureDecoderState(pool);
         hasPicture = false;
 
-        /* output pending work after the C2Work in process return. It is
-           neccessary to output work sequentially, otherwise the output
-           captured by the user may be discontinuous */
-        if (entry.frameIndex == frameIndex) {
-            delayOutput = true;
-        }
         if (sendPacketFlag == false) {
             goto inPacket;
         }
@@ -1154,8 +1101,7 @@ void C2RKMpiDec::getVuiParams(MppFrame frame) {
     }
 }
 
-c2_status_t C2RKMpiDec::sendpacket(
-        uint8_t *data, size_t size, uint64_t frmIndex, uint64_t pts, uint32_t flags) {
+c2_status_t C2RKMpiDec::sendpacket(uint8_t *data, size_t size, uint64_t pts, uint32_t flags) {
     c2_status_t ret = C2_OK;
     MppPacket packet = nullptr;
 
@@ -1186,9 +1132,6 @@ c2_status_t C2RKMpiDec::sendpacket(
         err = mMppMpi->decode_put_packet(mMppCtx, packet);
         if (err == MPP_OK) {
             c2_trace("send packet pts %lld size %d", pts, size);
-            if (!(flags & (C2FrameData::FLAG_CODEC_CONFIG | FLAG_NON_DISPLAY_FRAME))) {
-                mWorkQueue.insert(std::make_pair(frmIndex, pts));
-            }
             break;
         }
 
@@ -1209,7 +1152,7 @@ c2_status_t C2RKMpiDec::getoutframe(OutWorkEntry *entry, bool needGetFrame) {
     MPP_RET err = MPP_OK;
     MppFrame frame = nullptr;
 
-    uint64_t outIndex = 0;
+    uint64_t pts = 0;
     uint32_t tryCount = 0;
     std::shared_ptr<C2GraphicBlock> outblock = nullptr;
 
@@ -1267,24 +1210,12 @@ REDO:
         ret = C2_NO_MEMORY;
     } else {
         uint32_t err  = mpp_frame_get_errinfo(frame);
-        int64_t  pts  = mpp_frame_get_pts(frame);
-        uint32_t eos  = mpp_frame_get_eos(frame);
-        uint32_t mode = mpp_frame_get_mode(frame);
-
+        uint32_t eos = mpp_frame_get_eos(frame);
         MppBuffer mppBuffer = mpp_frame_get_buffer(frame);
-        bool isI4O2 = (mode & MPP_FRAME_FLAG_IEP_DEI_MASK) == MPP_FRAME_FLAG_IEP_DEI_I4O2;
+        pts = mpp_frame_get_pts(frame);
 
-        // find frameIndex from pts map.
-        for (auto it = mWorkQueue.begin(); it != mWorkQueue.end(); it++) {
-            if (pts == it->second) {
-                outIndex = it->first;
-                mWorkQueue.erase(it);
-                break;
-            }
-        }
-
-        c2_trace("get one frame [%d:%d] stride [%d:%d] pts %lld err %d eos %d frameIndex %d",
-                 width, height, hstride, vstride, pts, err, eos, outIndex);
+        c2_trace("get one frame [%d:%d] stride [%d:%d] pts %lld err %d eos %d",
+                 width, height, hstride, vstride, pts, err, eos);
 
         if (eos) {
             c2_info("get output eos.");
@@ -1343,20 +1274,8 @@ REDO:
 
         if (mCodingType == MPP_VIDEO_CodingAVC ||
             mCodingType == MPP_VIDEO_CodingHEVC ||
-            mCodingType == MPP_VIDEO_CodingMPEG2)
-        {
+            mCodingType == MPP_VIDEO_CodingMPEG2) {
             getVuiParams(frame);
-        }
-
-        if (outIndex == 0) {
-            if (isI4O2) {
-                outIndex = I2O4INDEX;
-            } else {
-                c2_warn("get unexpect pts %lld, skip this frame", pts);
-                if (mppBuffer) {
-                    mpp_buffer_put(mppBuffer);
-                }
-            }
         }
 
         ret = C2_OK;
@@ -1369,7 +1288,7 @@ exit:
     }
 
     entry->outblock = outblock;
-    entry->frameIndex = outIndex;
+    entry->timestamp = pts;
 
     return ret;
 }

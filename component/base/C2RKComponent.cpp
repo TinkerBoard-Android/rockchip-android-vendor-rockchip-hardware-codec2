@@ -434,25 +434,8 @@ std::list<std::unique_ptr<C2Work>> vec(std::unique_ptr<C2Work> &work) {
 
 void C2RKComponent::finish(
         uint64_t frameIndex,
-        std::function<void(const std::unique_ptr<C2Work> &)> fillWork,
-        bool delayOutput) {
+        std::function<void(const std::unique_ptr<C2Work> &)> fillWork) {
     std::unique_ptr<C2Work> work;
-
-    if (delayOutput) {
-        mReadyWork.push_back({ frameIndex, fillWork });
-        return;
-    }
-
-    if (frameIndex == I2O4INDEX) {
-        c2_trace("C2RKComponent::finish i2o4");
-        std::unique_ptr<C2Work> outputWork(new C2Work);
-        outputWork->worklets.clear();
-        outputWork->worklets.emplace_back(new C2Worklet);
-        fillWork(outputWork);
-        std::shared_ptr<C2Component::Listener> listener = mExecState.lock()->mListener;
-        listener->onWorkDone_nb(shared_from_this(), vec(outputWork));
-        return;
-    }
 
     {
         Mutexed<WorkQueue>::Locked queue(mWorkQueue);
@@ -463,12 +446,21 @@ void C2RKComponent::finish(
         work = std::move(queue->pending().at(frameIndex));
         queue->pending().erase(frameIndex);
     }
-    if (work) {
-        fillWork(work);
-        std::shared_ptr<C2Component::Listener> listener = mExecState.lock()->mListener;
-        listener->onWorkDone_nb(shared_from_this(), vec(work));
-        c2_trace("returning pending work %" PRIu64, frameIndex);
+
+    finish(work, fillWork);
+}
+
+void C2RKComponent::finish(
+        std::unique_ptr<C2Work> &work,
+        std::function<void(const std::unique_ptr<C2Work> &)> fillWork) {
+    if (!work) {
+        return;
     }
+
+    fillWork(work);
+    std::shared_ptr<C2Component::Listener> listener = mExecState.lock()->mListener;
+    listener->onWorkDone_nb(shared_from_this(), vec(work));
+    c2_trace("returning pending work");
 }
 
 void C2RKComponent::cloneAndSend(
@@ -632,13 +624,6 @@ bool C2RKComponent::processQueue() {
         std::shared_ptr<C2Component::Listener> listener = state->mListener;
         state.unlock();
         listener->onWorkDone_nb(shared_from_this(), vec(work));
-
-        // output all delayOutput work in this call.
-        while (mReadyWork.size() > 0) {
-            WorkInfo info = mReadyWork.front();
-            finish(info.frameIndex, info.fillWork);
-            mReadyWork.pop_front();
-        }
     } else {
         c2_trace("queue pending work");
         work->input.buffers.clear();
