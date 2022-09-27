@@ -125,14 +125,17 @@ public:
                                 C2Config::PROFILE_AVC_MAIN,
                                 C2Config::PROFILE_AVC_CONSTRAINED_HIGH,
                                 C2Config::PROFILE_AVC_PROGRESSIVE_HIGH,
-                                C2Config::PROFILE_AVC_HIGH}),
+                                C2Config::PROFILE_AVC_HIGH,
+                                C2Config::PROFILE_AVC_HIGH_10,
+                                C2Config::PROFILE_AVC_PROGRESSIVE_HIGH_10}),
                         C2F(mProfileLevel, level).oneOf({
                                 C2Config::LEVEL_AVC_1, C2Config::LEVEL_AVC_1B, C2Config::LEVEL_AVC_1_1,
                                 C2Config::LEVEL_AVC_1_2, C2Config::LEVEL_AVC_1_3,
                                 C2Config::LEVEL_AVC_2, C2Config::LEVEL_AVC_2_1, C2Config::LEVEL_AVC_2_2,
                                 C2Config::LEVEL_AVC_3, C2Config::LEVEL_AVC_3_1, C2Config::LEVEL_AVC_3_2,
                                 C2Config::LEVEL_AVC_4, C2Config::LEVEL_AVC_4_1, C2Config::LEVEL_AVC_4_2,
-                                C2Config::LEVEL_AVC_5, C2Config::LEVEL_AVC_5_1, C2Config::LEVEL_AVC_5_2})
+                                C2Config::LEVEL_AVC_5, C2Config::LEVEL_AVC_5_1, C2Config::LEVEL_AVC_5_2,
+                                C2Config::LEVEL_AVC_6, C2Config::LEVEL_AVC_6_1, C2Config::LEVEL_AVC_6_2})
                     })
                     .withSetter(ProfileLevelSetter, mSize)
                     .build());
@@ -151,9 +154,12 @@ public:
                                C2Config::LEVEL_HEVC_MAIN_3, C2Config::LEVEL_HEVC_MAIN_3_1,
                                C2Config::LEVEL_HEVC_MAIN_4, C2Config::LEVEL_HEVC_MAIN_4_1,
                                C2Config::LEVEL_HEVC_MAIN_5, C2Config::LEVEL_HEVC_MAIN_5_1,
-                               C2Config::LEVEL_HEVC_MAIN_5_2, C2Config::LEVEL_HEVC_HIGH_4,
-                               C2Config::LEVEL_HEVC_HIGH_4_1, C2Config::LEVEL_HEVC_HIGH_5,
-                               C2Config::LEVEL_HEVC_HIGH_5_1})
+                               C2Config::LEVEL_HEVC_MAIN_5_2, C2Config::LEVEL_HEVC_MAIN_6,
+                               C2Config::LEVEL_HEVC_MAIN_6_1, C2Config::LEVEL_HEVC_MAIN_6_2,
+                               C2Config::LEVEL_HEVC_HIGH_4, C2Config::LEVEL_HEVC_HIGH_4_1,
+                               C2Config::LEVEL_HEVC_HIGH_5, C2Config::LEVEL_HEVC_HIGH_5_1,
+                               C2Config::LEVEL_HEVC_HIGH_5_2, C2Config::LEVEL_HEVC_HIGH_6,
+                               C2Config::LEVEL_HEVC_HIGH_6_1, C2Config::LEVEL_HEVC_HIGH_6_2})
                     })
                     .withSetter(ProfileLevelSetter, mSize)
                     .build());
