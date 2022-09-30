@@ -2485,6 +2485,7 @@ c2_status_t C2RKMpiEnc::getoutpacket(OutWorkEntry *entry) {
         size_t   len = mpp_packet_get_length(packet);
         uint32_t eos = mpp_packet_get_eos(packet);
 
+        mOutputCount++;
         c2_trace("get outpacket pts %lld size %d eos %d", pts, len, eos);
 
         if (eos) {
@@ -2503,8 +2504,6 @@ c2_status_t C2RKMpiEnc::getoutpacket(OutWorkEntry *entry) {
 
         entry->frameIndex = pts;
         entry->outPacket  = packet;
-
-        mOutputCount++;
 
         return C2_OK;
     }
