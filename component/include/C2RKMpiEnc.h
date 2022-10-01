@@ -71,8 +71,7 @@ private:
     MppApi        *mMppMpi;
     MppEncCfg      mEncCfg;
     MppCodingType  mCodingType;
-    MyInputFormat  mInputFormat;
-    MppFrameFormat mMppFormat;
+    MppFrameFormat mInputMppFmt;
     int32_t        mChipType;
 
     bool           mStarted;
