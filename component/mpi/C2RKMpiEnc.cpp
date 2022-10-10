@@ -125,7 +125,7 @@ public:
         addParameter(
                 DefineParam(mUsage, C2_PARAMKEY_INPUT_STREAM_USAGE)
                 .withConstValue(new C2StreamUsageTuning::input(
-                        0u, (uint64_t)C2MemoryUsage::CPU_READ))
+                        0u, 0u))
                 .build());
 
         addParameter(
