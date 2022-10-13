@@ -1691,8 +1691,14 @@ c2_status_t C2RKMpiEnc::initEncoder() {
     uint32_t stride = 0;
 
     uint64_t usage = (GRALLOC_USAGE_SW_READ_OFTEN |
-                      GRALLOC_USAGE_SW_WRITE_OFTEN |
-                      RK_GRALLOC_USAGE_WITHIN_4G);
+                      GRALLOC_USAGE_SW_WRITE_OFTEN);
+
+    //only limit rga2
+    if (mChipType == RK_CHIP_3588 || mChipType == RK_CHIP_3568) {
+        usage = RK_GRALLOC_USAGE_WITHIN_4G;
+    }
+
+
 
     status_t status = GraphicBufferAllocator::get().allocate(
             C2_ALIGN(mSize->width, 16), C2_ALIGN(mSize->height, 16),
